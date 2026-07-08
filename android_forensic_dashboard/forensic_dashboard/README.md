@@ -3,11 +3,13 @@
 Lokalni DFIR portal za forenzičku analizu Android filesystem dump-ova (ADB backup,
 fizička ekstrakcija, TWRP/Magisk `dd` image, Cellebrite/MOBILedit izlaz i sl.).
 
-Aplikacija objedinjuje **13 analitičkih modula** u jedan dashboard, automatski
+Aplikacija objedinjuje **17 analitičkih modula** u jedan dashboard, automatski
 **ukršta nalaze između modula** (korelacije sa numeričkim skorom 0–100),
 gradi **hronološku vremensku liniju**, detektuje **anti-forenzičke tragove**,
-pruža **galeriju pronađenih slika/snimaka**, i generiše **forenzički izveštaj**
-(tekst / PDF / Word / HTML) uz opcioni **AI zaključak preko lokalnog modela**.
+pokušava **oporavak obrisanih podataka**, pruža **galeriju slika po albumima**,
+izvlači **poruke iz aplikacija** (WhatsApp, Viber, Telegram, Signal, Instagram…),
+**beleške i podsetnike**, i generiše **forenzički izveštaj** (tekst / PDF /
+Word / HTML) uz opcioni **AI zaključak preko lokalnog modela**.
 
 Sve radi **lokalno i offline** — nijedan podatak ne napušta mašinu (bitno za
 poverljivost i lanac nadležnosti). Aplikacija **ne menja originalne fajlove** —
@@ -71,7 +73,8 @@ Qwen model i sve zavisnosti aplikacije. Ne moraš ručno ništa kopirati.
 
 **Windows:**
 1. Dvoklik na **`install.bat`** (prati uputstva, izabereš AI model)
-2. Kad završi, dvoklik na **`run.bat`**
+2. Instaler napravi **ikonicu na Desktop-u** — dvoklik na
+   „Android Forensic Dashboard" pokreće aplikaciju (ili `run.bat`)
 
 **Linux / macOS:**
 ```
@@ -107,8 +110,9 @@ cd backend && uvicorn main:app --port 8000
    - **Pregled** — rezime, uređaj, broj artefakata/upozorenja
    - **Korelacije** — ukrštanja između izvora sa skorom i citiranim dokazima
    - **Timeline** — hronologija (glavni događaji / detaljno)
-   - **Galerija** — sve pronađene slike i snimci; klik = pun pregled + GPS,
-     vreme, uređaj, SHA-256 heš, EXIF/stego detalji
+   - **Galerija** — sve slike i snimci **grupisano po albumima** (Camera,
+     Screenshots, Instagram, WhatsApp…); klik = pun pregled + GPS, vreme,
+     uređaj, SHA-256 heš, EXIF/stego detalji
    - **Izveštaj** — generiši i preuzmi (**.txt / PDF / Word / HTML**), plus
      **🧠 AI Zaključak** (Ollama)
    - **Slučaj / Audit** — verzije analize, hash-chained audit trag,
@@ -116,13 +120,27 @@ cd backend && uvicorn main:app --port 8000
 
 ---
 
-## Moduli analize (13)
+## Moduli analize (17)
 
-`device_info` · `sms` · `calllog` · `contacts` · `browser` · `wifi` · `apk`
-· `exif` (slike + video + steganografija) · `crypto` (QR + adrese) ·
-`blockchain` (validacija + on-chain provera) · `mp3_signal` (audio stego) ·
-`signal_brd` (SQLCipher / novčanik) · `anti_forensics` (obrisani tragovi,
-manipulacija vremenom, root, lažni GPS, log wiping)
+| Modul | Šta izvlači |
+|-------|-------------|
+| `device_info` | Model, proizvođač, čipset, **serijski broj, SIM (ICCID/IMSI/operater), Android ID**, JWT identitet, **lista svih aplikacija** |
+| `sms` / `calllog` / `contacts` | SMS/MMS, pozivi (uklj. nultosekundne), kontakti |
+| `app_messaging` | Poruke iz **WhatsApp, Viber, Telegram, Signal, Instagram, Messenger** i dr. (čita plaintext, flaguje enkriptovane) |
+| `notes` | Beleške: **Samsung Notes, Google Keep, ColorNote, OmniNotes** |
+| `reminders` | Podsetnici, zadaci, alarmi, kalendarski događaji |
+| `browser` | Chrome istorija, akreditivi, kolačići |
+| `wifi` | WiFi mreže + lozinke (PSK), javne mreže |
+| `apk` | Statička DEX analiza, detekcija trojanizovanih aplikacija |
+| `exif` | Slike + **video** metapodaci (GPS, vreme) + **steganografija** |
+| `crypto` / `blockchain` | QR + kripto adrese, checksum validacija, on-chain provera |
+| `mp3_signal` | Audio steganografija |
+| `signal_brd` | SQLCipher metapodaci, BRD novčanik |
+| `deleted_recovery` | **Oporavak obrisanih**: SQLite freelist/WAL, trash, orphan thumbs |
+| `anti_forensics` | Obrisani tragovi, manipulacija vremenom, root, lažni GPS, log wiping |
+
+> IMEI se **ne** nalazi u logičkom dump-u (u modem/EFS je), pa aplikacija to
+> pošteno navodi; izvlači serijski broj i SIM identifikatore koji jesu dostupni.
 
 ---
 

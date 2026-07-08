@@ -105,10 +105,22 @@ if not errorlevel 1 (
     echo    Ollama nije dostupan - preskacem AI model ^(aplikacija radi i bez AI-a^).
 )
 
+REM ---------- Precica na Desktop-u (ikonica aplikacije) ----------
+echo.
+echo    Kreiram precicu "Android Forensic Dashboard" na Desktop-u...
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$d=[Environment]::GetFolderPath('Desktop'); $s=(New-Object -ComObject WScript.Shell).CreateShortcut($d+'\Android Forensic Dashboard.lnk'); $s.TargetPath='%~dp0run.bat'; $s.WorkingDirectory='%~dp0'; $s.IconLocation='%~dp0public\favicon.ico'; $s.Description='Android Forensic Dashboard'; $s.Save()" 2>nul
+if exist "%USERPROFILE%\Desktop\Android Forensic Dashboard.lnk" (
+    echo    Precica kreirana - dvoklik na nju pokrece aplikaciju.
+) else (
+    echo    Precicu nije bilo moguce kreirati automatski - koristi run.bat.
+)
+
 echo.
 echo ============================================================
 echo    INSTALACIJA ZAVRSENA!
-echo    Pokreni aplikaciju dvoklikom na:  run.bat
+echo    Pokreni aplikaciju: dvoklik na "Android Forensic Dashboard"
+echo    ikonicu na Desktop-u  (ili run.bat u ovom folderu).
 echo ============================================================
 echo.
 pause

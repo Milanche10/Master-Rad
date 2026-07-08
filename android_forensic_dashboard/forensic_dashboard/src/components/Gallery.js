@@ -49,6 +49,7 @@ export default function Gallery({ sessionId, onOpen }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [filter, setFilter] = useState('all'); // all | gps | images | videos | stego
+  const [album, setAlbum] = useState(null);     // naziv albuma ili null = svi
 
   const load = async (f = filter) => {
     if (!sessionId) return;
@@ -110,10 +111,10 @@ export default function Gallery({ sessionId, onOpen }) {
         }}>↻ Osvježi</button>
       </div>
 
-      {/* Filteri */}
-      <div style={{ display: 'flex', gap: 6, marginBottom: 16 }}>
+      {/* Filteri po tipu */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
         {FILTERS.map(([id, label]) => (
-          <button key={id} onClick={() => setF(id)} style={{
+          <button key={id} onClick={() => { setF(id); setAlbum(null); }} style={{
             background: filter === id ? C.accentDim : 'transparent',
             color: filter === id ? C.accent : C.textMuted,
             border: `1px solid ${filter === id ? C.accent + '66' : C.border}`,
@@ -122,11 +123,33 @@ export default function Gallery({ sessionId, onOpen }) {
         ))}
       </div>
 
+      {/* Albumi */}
+      {data && data.albums && data.albums.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+          <span style={{ fontFamily: C.fontMono, fontSize: 10, color: C.textMuted, alignSelf: 'center', marginRight: 4 }}>ALBUMI:</span>
+          <button onClick={() => setAlbum(null)} style={{
+            background: album === null ? C.greenDim : 'transparent',
+            color: album === null ? C.green : C.textMuted,
+            border: `1px solid ${album === null ? C.green + '66' : C.border}`,
+            borderRadius: 12, padding: '3px 10px', fontFamily: C.fontMono, fontSize: 10, cursor: 'pointer',
+          }}>Svi ({data.count})</button>
+          {data.albums.map((al) => (
+            <button key={al.name} onClick={() => setAlbum(al.name)} style={{
+              background: album === al.name ? C.greenDim : 'transparent',
+              color: album === al.name ? C.green : C.textMuted,
+              border: `1px solid ${album === al.name ? C.green + '66' : C.border}`,
+              borderRadius: 12, padding: '3px 10px', fontFamily: C.fontMono, fontSize: 10, cursor: 'pointer',
+            }}>{al.name} ({al.count})</button>
+          ))}
+        </div>
+      )}
+
       {loading && <div style={{ color: C.textMuted, fontFamily: C.fontMono, fontSize: 12 }}>⟳ Učitavam medije...</div>}
       {error && <div style={{ color: C.red, fontSize: 12 }}>Greška: {error}</div>}
 
-      {data && !loading && (
-        data.media.length === 0
+      {data && !loading && (() => {
+        const shown = album ? data.media.filter(m => m.album === album) : data.media;
+        return shown.length === 0
           ? <div style={{ color: C.textMuted, fontFamily: C.fontMono, fontSize: 12 }}>Nema medija za ovaj filter.</div>
           : (
             <div style={{
@@ -134,12 +157,12 @@ export default function Gallery({ sessionId, onOpen }) {
               gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
               gap: 8,
             }}>
-              {data.media.map((item) => (
+              {shown.map((item) => (
                 <Thumb key={item.rel} item={item} sessionId={sessionId} onOpen={openMedia} />
               ))}
             </div>
-          )
-      )}
+          );
+      })()}
     </div>
   );
 }
