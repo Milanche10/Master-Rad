@@ -1,1 +1,38 @@
-Mobile_Forensics_Case/evidence/
+# ─── Forenzički dokazi / dump (LIČNI PODACI + 36GB — NIKAD na GitHub) ───
+Mobile_Forensics_Case/
+
+# ─── Node / frontend ───
+node_modules/
+build/
+dist/
+.npm/
+
+# ─── Python / backend ───
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# ─── Runtime podaci aplikacije (slučajevi + audit iz testiranja) ───
+android_forensic_dashboard/forensic_dashboard/backend/cases/
+android_forensic_dashboard/forensic_dashboard/backend/**/cases.db
+audit.jsonl
+
+# ─── Okruženje / tajne ───
+.env
+*.env.local
+
+# ─── OS / editor cruft ───
+.DS_Store
+Thumbs.db
+~$*.docx
+~$*.pptx
+*.tmp
+.idea/
+.vscode/
+
+# ─── Claude Code lokalne postavke ───
+**/.claude/settings.local.json
