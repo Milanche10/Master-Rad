@@ -711,9 +711,23 @@ def build_correlations(results: dict) -> list:
         if geo_count > 8:
             break
 
+    # Dedup: ukloni korelacije sa ISTIM skupom dokaza i naslovom (zadrži onu
+    # sa najvišim skorom). Sprečava dupliranje generičkih pravila (C9/C10) i
+    # višestruko izveštavanje istog nalaza.
+    seen_ev, deduped = set(), []
+    for c in sorted(correlations, key=lambda c: -c.get("score", 0)):
+        ev_ids = tuple(sorted(
+            (e.get("artifact_id") or e.get("value") or "") for e in c.get("evidence", [])
+        ))
+        key = (c.get("title"), ev_ids)
+        if key in seen_ev:
+            continue
+        seen_ev.add(key)
+        deduped.append(c)
+
     # Sortiranje po skoru (najjače korelacije prve) — deterministički
-    correlations.sort(key=lambda c: (-c.get("score", 0), c.get("id", "")))
-    return correlations
+    deduped.sort(key=lambda c: (-c.get("score", 0), c.get("id", "")))
+    return deduped
 
 
 # Labele za prikaz pojedinačnih tipova artefakata u narativnoj
@@ -1785,6 +1799,10 @@ def reveal_artifact_file(session_id: str, body: RevealRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Nije moguće otvoriti eksplorer: {e}")
 
+    # Chain of custody: veštak je namerno pristupio dokaznom fajlu — audituj.
+    audit_log.log_event(actor="examiner", action="reveal_evidence_file",
+                        case_id=session.get("case_id"), run_id=session.get("_run_id"),
+                        params={"path": body.path})
     return {"opened": str(file_path)}
 
 
@@ -1792,3 +1810,25 @@ def reveal_artifact_file(session_id: str, body: RevealRequest):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "sessions": len(SESSIONS)}
+
+
+# ─── Serviranje izgrađenog frontenda (jedan proces, jedan URL) ─────────────
+# Ako postoji ../build (npr. posle 'npm run build'), FastAPI servira i UI na
+# istom portu (localhost:8000). Ovim cela aplikacija radi kao JEDAN proces —
+# instaler ne mora da pokreće zaseban Node server. U dev-u (bez build/) ovo
+# se preskače i koristi se 'npm start' + proxy.
+_BUILD_DIR = Path(__file__).resolve().parent.parent / "build"
+if _BUILD_DIR.exists() and (_BUILD_DIR / "index.html").exists():
+    from fastapi.staticfiles import StaticFiles
+    if (_BUILD_DIR / "static").exists():
+        app.mount("/static", StaticFiles(directory=str(_BUILD_DIR / "static")), name="static")
+
+    @app.get("/{full_path:path}")
+    def _serve_spa(full_path: str):
+        # /api rute su registrovane iznad (imaju prednost); ovde servira SPA.
+        if full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        candidate = _BUILD_DIR / full_path
+        if full_path and candidate.exists() and candidate.is_file():
+            return FileResponse(str(candidate))
+        return FileResponse(str(_BUILD_DIR / "index.html"))  # SPA fallback

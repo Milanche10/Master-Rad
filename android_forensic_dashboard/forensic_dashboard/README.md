@@ -62,35 +62,39 @@ podesiš model.
 
 ---
 
-## 2. Pokretanje aplikacije
+## 2. Instalacija i pokretanje
 
-### Opcija A — jednim klikom (preporučeno)
+### Preporučeno — instaler (jednim klikom)
 
-- **Windows:** dvoklik na `start.bat`
-- **Linux / macOS:**
-  ```
-  ./start.sh
-  ```
+Instaler sam proveri i (po potrebi) preuzme **sve** — Python, Node.js, Ollama,
+Qwen model i sve zavisnosti aplikacije. Ne moraš ručno ništa kopirati.
 
-Skripta instalira zavisnosti, pokreće backend (`http://localhost:8000`) i
-frontend (`http://localhost:3000`).
+**Windows:**
+1. Dvoklik na **`install.bat`** (prati uputstva, izabereš AI model)
+2. Kad završi, dvoklik na **`run.bat`**
 
-### Opcija B — ručno (dva terminala)
-
-**Terminal 1 — Backend:**
+**Linux / macOS:**
 ```
-cd backend
-pip install -r requirements.txt
-uvicorn main:app --port 8000
+./install.sh      # jednom, instalira sve
+./run.sh          # svaki put za pokretanje
 ```
 
-**Terminal 2 — Frontend:**
+Aplikacija se otvara na **<http://localhost:8000>** (backend servira i UI kao
+jedan proces).
+
+### Napredno — ručno
+
 ```
-npm install
-npm start
+# backend
+cd backend && pip install -r requirements.txt && cd ..
+# frontend (produkciona verzija koju servira backend)
+npm install && npm run build
+# pokretanje (jedan proces, UI + API na :8000)
+cd backend && uvicorn main:app --port 8000
 ```
 
-Otvori **<http://localhost:3000>** u pregledaču.
+> Dev mod (hot-reload, dva porta): `start.bat` / `start.sh` — pokreće backend
+> na `:8000` i React dev server na `:3000`.
 
 ---
 
