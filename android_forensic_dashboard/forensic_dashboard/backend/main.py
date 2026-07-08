@@ -69,7 +69,7 @@ from docx import Document
 from modules import (
     device_info, sms, calllog, contacts, browser,
     wifi, apk, exif, crypto, mp3_signal, blockchain, signal_brd,
-    anti_forensics,
+    anti_forensics, notes, reminders, app_messaging, deleted_recovery,
 )
 from utils.dump_resolver import DumpResolver
 from utils.entity_graph import build_entity_graph
@@ -119,6 +119,10 @@ MODULE_MAP = {
     "mp3_signal":   mp3_signal.analyze,
     "blockchain":   blockchain.analyze,
     "signal_brd":   signal_brd.analyze,
+    "app_messaging": app_messaging.analyze,
+    "notes":        notes.analyze,
+    "reminders":    reminders.analyze,
+    "deleted_recovery": deleted_recovery.analyze,
     "anti_forensics": anti_forensics.analyze,
 }
 
@@ -1379,7 +1383,8 @@ def get_correlation_rules():
 
 
 @app.get("/api/session/{session_id}/media")
-def get_media(session_id: str, kind: str | None = None, only_gps: bool = False, limit: int = 800):
+def get_media(session_id: str, kind: str | None = None, only_gps: bool = False,
+              album: str | None = None, limit: int = 2000):
     """
     Galerija: lista SVIH slika i snimaka u korisničkim media direktorijumima,
     obogaćena metapodacima iz EXIF modula (GPS, vreme, uređaj, stego, hash).
@@ -1424,9 +1429,18 @@ def get_media(session_id: str, kind: str | None = None, only_gps: bool = False, 
             has_gps = ex.get("lat") is not None and ex.get("lon") is not None
             if only_gps and not has_gps:
                 continue
+            # Album = naziv roditeljskog foldera (Camera, Screenshots, Instagram,
+            # WhatsApp Images...) — za grupisanje galerije po albumima.
+            parts = rel.split("/")
+            album_name = parts[-2] if len(parts) >= 2 else "Ostalo"
+            if album_name in (".thumbnails", "thumbnails"):
+                album_name = "Thumbnails"
+            if album and album != album_name:
+                continue
             items.append({
                 "filename": f.name,
                 "rel": rel,
+                "album": album_name,
                 "kind": k,
                 "size_kb": (f.stat().st_size // 1024) if f.exists() else 0,
                 "ts": (a.get("ts") if a else None),
@@ -1443,9 +1457,18 @@ def get_media(session_id: str, kind: str | None = None, only_gps: bool = False, 
 
     # GPS/sumnjive prve, pa po vremenu
     items.sort(key=lambda m: (0 if (m["lat"] is not None or m["stego"]) else 1, m["ts"] or ""))
+
+    # Rezime po albumima (za grupisanje u galeriji)
+    album_counts = {}
+    for m in items:
+        album_counts[m["album"]] = album_counts.get(m["album"], 0) + 1
+    albums = sorted(({"name": n, "count": c} for n, c in album_counts.items()),
+                    key=lambda x: -x["count"])
+
     return {"count": len(items),
             "with_gps": sum(1 for m in items if m["lat"] is not None),
             "stego": sum(1 for m in items if m["stego"]),
+            "albums": albums,
             "media": items}
 
 

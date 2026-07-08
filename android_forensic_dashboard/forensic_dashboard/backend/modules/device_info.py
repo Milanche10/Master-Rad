@@ -17,7 +17,7 @@ from typing import Optional
 from utils.dump_resolver import DumpResolver
 from utils.helpers import (
     artifact, finding, module_result, not_found_result,
-    try_decode_jwt, sha256_file,
+    try_decode_jwt, sha256_file, ms_to_iso,
 )
 from utils.db_reader import SafeDBReader
 
@@ -352,6 +352,68 @@ def _identify_device(resolver: DumpResolver, props: dict) -> dict:
     }
 
 
+# ─── SIM / IDENTITET UREĐAJA ──────────────────────────────────────────────
+
+# MCC → država (kratka lista za prepoznavanje operatera/lokacije SIM-a)
+_MCC_COUNTRY = {
+    "228": "Švajcarska", "222": "Italija", "232": "Austrija", "262": "Nemačka",
+    "208": "Francuska", "220": "Srbija", "219": "Hrvatska", "293": "Slovenija",
+    "234": "Velika Britanija", "310": "SAD", "311": "SAD", "260": "Poljska",
+}
+
+
+def _extract_sim_identity(resolver) -> list[dict]:
+    """
+    Izvlači SIM/pretplatničke identifikatore iz telephony.db (siminfo):
+    ICCID (serijski broj SIM-a), IMSI, broj, operater, MCC/MNC → država.
+    Dual-SIM daje više redova. IMEI se OVDE ne nalazi (modem/EFS particija).
+    """
+    sims = []
+    tel = (resolver.resolve_path("data/data/com.android.providers.telephony/databases/telephony.db")
+           or resolver.find_db_by_schema({"siminfo"}, any_of=True))
+    if not tel or not tel.exists():
+        return sims
+    try:
+        with SafeDBReader(tel) as db:
+            if "siminfo" not in db.tables():
+                return sims
+            cols = set(db.columns("siminfo"))
+            wanted = [c for c in ("sim_id", "icc_id", "iccid", "imsi", "number",
+                                  "display_name", "carrier_name", "mcc", "mnc",
+                                  "mcc_string", "card_id") if c in cols]
+            if not wanted:
+                return sims
+            for r in db.query(f"SELECT {', '.join(wanted)} FROM siminfo"):
+                mcc = str(r.get("mcc") or r.get("mcc_string") or "").strip()
+                sims.append({
+                    "slot": r.get("sim_id"),
+                    "iccid": r.get("icc_id") or r.get("iccid"),
+                    "imsi": r.get("imsi"),
+                    "number": r.get("number"),
+                    "operator": r.get("carrier_name") or r.get("display_name"),
+                    "mcc": mcc, "mnc": r.get("mnc"),
+                    "country": _MCC_COUNTRY.get(mcc, ""),
+                    "card_id": r.get("card_id"),
+                })
+    except Exception:
+        pass
+    return sims
+
+
+def _find_android_id(resolver) -> str:
+    """Android ID (ssaid) iz settings_ssaid.xml ili settings.db."""
+    ssaid = resolver.resolve_path("data/system/users/0/settings_ssaid.xml")
+    if ssaid and ssaid.exists():
+        try:
+            txt = ssaid.read_text(errors="replace")
+            m = re.search(r'value="([0-9a-f]{16})"', txt)
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+    return ""
+
+
 # ─── MAIN ANALYZE FUNCTION ────────────────────────────────────────────────
 
 def analyze(dump_path: str) -> dict:
@@ -453,21 +515,68 @@ def analyze(dump_path: str) -> dict:
         if wifi_mac.startswith(("02:", "da:", "5e:", "be:", "aa:")):
             alerts.append(f"Randomizovana MAC adresa detektovana: {wifi_mac}")
 
-    # ── 5. packages.xml ───────────────────────────────────────────────────
+    # ── 4b. Serijski broj + IMEI + SIM identitet ──────────────────────────
+    serial = _first_prop(props, ["ro.serialno", "ro.boot.serialno", "ril.serialnumber"], "")
+    if serial:
+        findings.append(finding("Serijski broj", serial))
+        artifacts_list.append(artifact("account", f"Serijski broj uređaja: {serial}",
+                                       "build.prop", extra={"serial": serial}))
+
+    # IMEI se ne nalazi u logičkom dump-u (modem/EFS particija) — pošteno navedi.
+    findings.append(finding("IMEI 1 / IMEI 2",
+                            "Nije dostupno u logičkom dump-u (modem/EFS particija)"))
+
+    sims = _extract_sim_identity(resolver)
+    if sims:
+        findings.append(finding("Detektovano SIM kartica", str(len(sims))))
+        for i, s in enumerate(sims, 1):
+            label = f"SIM {i}"
+            parts = []
+            if s.get("iccid"): parts.append(f"ICCID {s['iccid']}")
+            if s.get("imsi"): parts.append(f"IMSI {s['imsi']}")
+            if s.get("operator"): parts.append(str(s["operator"]))
+            if s.get("country"): parts.append(f"({s['country']})")
+            if s.get("number"): parts.append(f"broj {s['number']}")
+            findings.append(finding(f"  {label}", ", ".join(parts) or "—"))
+            artifacts_list.append(artifact(
+                "account", f"{label}: " + ", ".join(parts),
+                "telephony.db (siminfo)",
+                extra={"sim_slot": s.get("slot"), "iccid": s.get("iccid"),
+                       "imsi": s.get("imsi"), "operator": s.get("operator"),
+                       "country": s.get("country"), "number": s.get("number"),
+                       "serial": s.get("card_id")}))
+
+    android_id = _find_android_id(resolver)
+    if android_id:
+        findings.append(finding("Android ID (ssaid)", android_id))
+        artifacts_list.append(artifact("account", f"Android ID: {android_id}",
+                                       "settings_ssaid.xml", extra={"android_id": android_id}))
+
+    # ── 5. packages.xml (SVE aplikacije + side-loaded) ────────────────────
     pkg_xml = resolver.resolve("packages_xml")
     if pkg_xml:
         pkg_data = _parse_packages_xml(pkg_xml)
         findings.append(finding("Instalirane aplikacije", str(pkg_data["total"])))
         findings.append(finding("Side-loaded (bez installer-a)", str(len(pkg_data["sideloaded"]))))
 
-        sideloaded_names = [p["name"] for p in pkg_data["sideloaded"] if p["name"]]
-        for pkg_name in sideloaded_names:
+        # SVE aplikacije kao artefakti (za listu u aplikaciji), sistemske izuzete iz "third-party"
+        for p in pkg_data["all"]:
+            name = p.get("name")
+            if not name:
+                continue
+            is_system = p.get("code_path", "").startswith(SYSTEM_CODE_PATH_PREFIXES)
             artifacts_list.append(artifact(
                 "app",
-                f"Side-loaded: {pkg_name}",
+                f"{'[sistem] ' if is_system else ''}{name}",
                 "packages.xml",
-                extra={"package": pkg_name, "sideloaded": True},
+                ts=ms_to_iso(p.get("first_install_ms")) if p.get("first_install_ms") else None,
+                extra={"package": name, "system": is_system,
+                       "sideloaded": bool(not p.get("installer") and not is_system),
+                       "installer": p.get("installer") or "—",
+                       "first_install_ms": p.get("first_install_ms")},
             ))
+
+        sideloaded_names = [p["name"] for p in pkg_data["sideloaded"] if p["name"]]
 
         if sideloaded_names:
             preview = ", ".join(sideloaded_names[:10])
