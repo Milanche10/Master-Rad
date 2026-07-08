@@ -1,0 +1,14 @@
+fastapi==0.111.0
+uvicorn[standard]==0.29.0
+python-multipart==0.0.9
+aiofiles==23.2.1
+pillow>=10.4.0
+mutagen==1.47.0
+opencv-python-headless>=4.10.0.84   # 4.10+ podržava NumPy 2.x (QR skener za kripto adrese)
+requests==2.31.0
+androguard==3.3.5
+reportlab==4.5.1
+python-docx==1.2.0
+# AI forenzički zaključak koristi LOKALNI Ollama server (besplatan, open-source).
+# Nije potrebna dodatna pip biblioteka — koristi se 'requests' (već iznad).
+# Podešavanje: instaliraj Ollama (https://ollama.com), pa: ollama pull llama3.1
