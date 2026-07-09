@@ -3,6 +3,7 @@ import { C } from '../utils/constants';
 import * as api from '../utils/api';
 import DeviceDetect from './DeviceDetect';
 import AcquireProgress from './AcquireProgress';
+import SetupPanel from './SetupPanel';
 
 const SOURCES = [
   { id: 'mobile', icon: '📱', label: 'Mobilni telefon', desc: 'USB akvizicija (adb) ili postojeći dump' },
@@ -88,6 +89,14 @@ export default function AcquisitionWizard({ onAnalyze, loading, error }) {
 
         {/* KORAK: izbor izvora */}
         {step === 'source' && (
+          <>
+          <div style={{ textAlign: 'right', marginBottom: 10 }}>
+            <button onClick={() => setStep('setup')} style={{ background: 'transparent',
+              color: C.textSecondary, border: `1px solid ${C.border}`, borderRadius: 6,
+              padding: '6px 12px', fontFamily: C.fontMono, fontSize: 11, cursor: 'pointer' }}>
+              ⚙ Zavisnosti / Setup
+            </button>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14 }}>
             {SOURCES.map((s) => {
               const rdy = sources?.sources?.[s.id];
@@ -115,6 +124,15 @@ export default function AcquisitionWizard({ onAnalyze, loading, error }) {
                 </button>
               );
             })}
+          </div>
+          </>
+        )}
+
+        {/* KORAK: podešavanje zavisnosti (pre analize) */}
+        {step === 'setup' && (
+          <div style={{ maxWidth: 760, margin: '0 auto' }}>
+            <SetupPanel />
+            <BackBtn onClick={reset} />
           </div>
         )}
 

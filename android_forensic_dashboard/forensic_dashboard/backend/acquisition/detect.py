@@ -40,7 +40,15 @@ def _run(cmd, timeout=20) -> tuple[int, str, str]:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def adb_path() -> str | None:
-    # PATH, pa čest ANDROID_HOME/platform-tools raspored
+    # Prvo adb koji je aplikacija sama obezbedila (spakovan uz app ili preuzet),
+    # pa PATH, pa ANDROID_HOME/platform-tools raspored.
+    try:
+        from provisioning import provision
+        p = provision.find_adb()
+        if p:
+            return p
+    except Exception:
+        pass
     p = shutil.which("adb")
     if p:
         return p

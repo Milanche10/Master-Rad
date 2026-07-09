@@ -14,6 +14,14 @@ ROOT = os.path.abspath(os.getcwd())
 # Frontend build ide u paket kao 'build/'
 datas = [(os.path.join(ROOT, "build"), "build")]
 binaries = []
+
+# adb (Android platform-tools) se UGRAĐUJE u instaler ako je preuzet u
+# tools/platform-tools (build_installer.bat ga skine pre pakovanja) → akvizicija
+# telefona radi odmah, offline, bez ručne instalacije. Ako ga nema, aplikacija
+# ga preuzme sama pri prvom korišćenju (provisioning.ensure_adb).
+_platform_tools = os.path.join(ROOT, "tools", "platform-tools")
+if os.path.isdir(_platform_tools):
+    datas.append((_platform_tools, os.path.join("tools", "platform-tools")))
 hiddenimports = collect_submodules("uvicorn") + [
     "PIL", "PIL.Image", "PIL.ExifTags",
     "mutagen", "mutagen.mp4",

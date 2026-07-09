@@ -13,6 +13,7 @@ Endpointi:
 """
 
 import io
+import os
 import sys
 import subprocess
 import uuid
@@ -87,6 +88,7 @@ from acquisition import cases_fs as acq_cases
 from acquisition import storage as acq_storage
 from export import exporters as exporters_mod
 from export import packager as packager_mod
+from provisioning import provision as provisioning
 
 # ─── Logging ──────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -2159,6 +2161,34 @@ def export_session_case(session_id: str, format: str = "zip"):
                         case_id=session.get("case_id"), params={"kind": "analysis_only"})
     tag = (session.get("fs_case_id") or session.get("case_id") or "slucaj")
     return _file_response(buf.getvalue(), "application/zip", f"{tag}.zip")
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SETUP / PROVISIONING — aplikacija sama preuzme zavisnosti (bez ručne instalacije)
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/setup/status")
+def setup_status():
+    """Status runtime zavisnosti: adb (telefon) i Ollama+model (AI)."""
+    return provisioning.status(os.environ.get("AI_MODEL", "qwen3:32b"))
+
+
+@app.post("/api/setup/adb")
+def setup_install_adb():
+    """Preuzmi i instaliraj adb (Android platform-tools) — pozadinski posao."""
+    job_id = acq_jobs.start_job("setup_adb", provisioning.ensure_adb)
+    audit_log.log_event(actor="examiner", action="provision_adb", params={"job_id": job_id})
+    return {"job_id": job_id}
+
+
+@app.post("/api/setup/ollama")
+def setup_install_ollama(model: str = ""):
+    """Instaliraj Ollama + preuzmi AI model (VELIKO) — pozadinski posao."""
+    m = model or os.environ.get("AI_MODEL", "qwen3:32b")
+    job_id = acq_jobs.start_job("setup_ollama", provisioning.ensure_ollama, model=m)
+    audit_log.log_event(actor="examiner", action="provision_ollama",
+                        params={"job_id": job_id, "model": m})
+    return {"job_id": job_id}
 
 
 # ─── Health check ─────────────────────────────────────────────────────────

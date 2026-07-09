@@ -77,6 +77,17 @@ AI zaključak koristi **lokalni** open-source model preko Ollama-e. Bez ovoga
 aplikacija radi normalno — samo dugme „🧠 AI Zaključak" neće raditi dok ne
 podesiš model.
 
+### Najlakše — jednim klikom iz aplikacije (preporučeno)
+
+U aplikaciji otvori **⚙ Zavisnosti / Setup** (u sidebar-u ili na startnom
+ekranu) i klikni **„Instaliraj AI (Ollama + model)"**. Aplikacija **sama**
+preuzme i instalira Ollama i povuče model — bez ručnog rada. Isto važi i za
+**adb** (dugme „Instaliraj adb"), ako ga instaler nije već ugradio.
+
+> ⚠ AI model je **velik** (GB); preuzimanje može dugo trajati. adb je mali (~15 MB).
+
+### Ručno (alternativa)
+
 1. Preuzmi i instaliraj **Ollama**: <https://ollama.com>  (Windows/macOS/Linux)
 2. U terminalu pokreni server (na Windows-u se pokreće sam posle instalacije):
    ```
@@ -138,14 +149,20 @@ cd backend && uvicorn main:app --port 8000
 > Dev mod (hot-reload, dva porta): `start.bat` / `start.sh` — pokreće backend
 > na `:8000` i React dev server na `:3000`.
 
-### Distribucija kao MSI (jedan fajl, bez Python/Node kod korisnika)
+### Distribucija kao MSI (jedan fajl, turnkey — bez ručnih instalacija)
 
 Za deljenje kao prava Windows aplikacija: `build_installer.bat` upakuje sve
 (PyInstaller → samostalni `.exe`, pa WiX 3 → MSI) u
-**`AndroidForensicDashboard-Setup.msi`** (~135 MB). Korisnik dobija samo taj
-`.msi`, instalira ga dvoklikom kroz čarobnjak → aplikacija u Program Files +
-**Desktop/Start Menu prečica** (ikonica lupe) + uninstaller; ne treba mu ni
-Python ni Node.
+**`AndroidForensicDashboard-Setup.msi`** (~135 MB). Korisnik dobija **samo taj
+jedan `.msi`**, instalira ga dvoklikom kroz čarobnjak → aplikacija u Program
+Files + **Desktop/Start Menu prečica** + uninstaller.
+
+**Korisnik NE instalira ništa ručno:**
+- **Python, Node, sav app kod** — ugrađeni u `.exe` (PyInstaller).
+- **adb** (za telefon) — **ugrađen u instaler** (build ga preuzme). Ako fali,
+  aplikacija ga **skine sama** pri prvom korišćenju.
+- **Ollama + AI model** (veliko, GB) — ne pakuje se u MSI, ali aplikacija ga
+  **instalira jednim klikom** iz **⚙ Zavisnosti / Setup** (vidi sekciju 1).
 
 > Za **pravljenje** MSI-ja dovoljni su Python 3.11 i Node.js — **.NET SDK nije
 > potreban** (WiX 3 alate skripta sama preuzme; oni traže samo .NET Framework

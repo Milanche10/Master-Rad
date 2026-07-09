@@ -13,6 +13,7 @@ import CaseInfo         from './components/CaseInfo';
 import Gallery          from './components/Gallery';
 import EvidenceBrowser  from './components/EvidenceBrowser';
 import ExportManager    from './components/ExportManager';
+import SetupPanel       from './components/SetupPanel';
 import ArtifactModal    from './components/ArtifactModal';
 
 export default function App() {
@@ -118,13 +119,15 @@ export default function App() {
         )}
 
         {/* Univerzalni izvoz — traka za izvoz tekućeg prikaza (PDF/Word/HTML/TXT) */}
-        <div style={{
-          display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
-          padding: '6px 16px', borderBottom: `1px solid ${C.border}`, background: C.bgPanel,
-          flexShrink: 0,
-        }}>
-          <ExportManager sessionId={session.sessionId} view={exportView} />
-        </div>
+        {activeTab !== 'setup' && (
+          <div style={{
+            display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
+            padding: '6px 16px', borderBottom: `1px solid ${C.border}`, background: C.bgPanel,
+            flexShrink: 0,
+          }}>
+            <ExportManager sessionId={session.sessionId} view={exportView} />
+          </div>
+        )}
 
         {/* Sadržaj aktivnog taba */}
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
@@ -200,6 +203,10 @@ export default function App() {
             results={session.results}
             onOpen={setSelectedArtifact}
           />
+        )}
+
+        {activeTab === 'setup' && (
+          <SetupPanel />
         )}
         </div>
       </main>
