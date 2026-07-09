@@ -23,11 +23,14 @@ Iz korena projekta:
 build_installer.bat
 ```
 
-Skripta radi 5 koraka:
+Skripta radi ove korake:
 1. `npm install` + `npm run build` — gradi React frontend u `build/`
 2. `pip install` backend zavisnosti + PyInstaller
-3. `pyinstaller afd.spec` — pakuje backend + frontend u `dist/AndroidForensicDashboard/`
-   (samostalni `.exe`, ~330 MB, ne treba Python/Node)
+2b. Preuzima **adb** (Android platform-tools) u `tools/platform-tools/` da bi se
+   **ugradio u instaler** (akvizicija telefona radi odmah, offline). Ako
+   preuzimanje ne uspe, aplikacija skine adb sama pri prvom korišćenju.
+3. `pyinstaller afd.spec` — pakuje backend + frontend (+ adb) u
+   `dist/AndroidForensicDashboard/` (samostalni `.exe`, ~330 MB, ne treba Python/Node)
 4. Preuzima **WiX 3** alate (ako fale) u `installer/wix3/`
 5. `heat` (popiše sve fajlove) → `candle` (kompajlira) → `light` (poveže) →
    `dist\AndroidForensicDashboard-Setup.msi`
@@ -49,12 +52,14 @@ ne u Program Files).
 > raspakuje sadržaj bez izmena sistema (administrativna instalacija) — dobar način
 > da se proveri da MSI sadrži `AndroidForensicDashboard.exe` i `_internal\build\`.
 
-## AI (Ollama) — i dalje odvojeno
+## AI (Ollama) — instalira se iz aplikacije, jednim klikom
 
-Ollama + Qwen model (~20 GB) se **ne pakuju** u MSI (preveliki + Ollama je
-zasebna aplikacija). Korisnik jednom instalira Ollama sa <https://ollama.com>
-i pokrene `ollama pull qwen3:32b` (ili lakši `qwen2.5:7b`). Bez toga cela
-aplikacija radi normalno — samo AI zaključak prikaže uputstvo.
+Ollama + AI model (GB) se **ne pakuju** u MSI (preveliki). Ali korisnik ih
+**ne instalira ručno**: u aplikaciji **⚙ Zavisnosti / Setup** klikne
+**„Instaliraj AI (Ollama + model)"** i aplikacija sama preuzme Ollama i povuče
+model (`backend/provisioning/provision.py`). Bez toga cela aplikacija radi
+normalno — samo AI zaključak prikaže uputstvo. (Ručno i dalje radi:
+<https://ollama.com> + `ollama pull qwen3:32b`.)
 
 ## Ručno (koraci pojedinačno)
 

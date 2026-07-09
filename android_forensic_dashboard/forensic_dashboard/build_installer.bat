@@ -30,6 +30,16 @@ python -m pip install --upgrade pip -q
 python -m pip install -r backend\requirements.txt -q || ( echo GRESKA: pip requirements & pause & exit /b 1 )
 python -m pip install pyinstaller -q || ( echo GRESKA: pip pyinstaller & pause & exit /b 1 )
 
+REM ---------- 2b. adb (Android platform-tools) — ugradi u instaler ----------
+echo.
+echo [2b] Preuzimanje adb (Android platform-tools) za ugradnju u instaler...
+if not exist "%ROOT%\tools\platform-tools\adb.exe" (
+    powershell -NoProfile -Command "$ErrorActionPreference='Stop'; $global:ProgressPreference='SilentlyContinue'; New-Item -ItemType Directory -Force -Path '%ROOT%\tools' ^| Out-Null; Invoke-WebRequest -Uri 'https://dl.google.com/android/repository/platform-tools-latest-windows.zip' -OutFile '%ROOT%\tools\pt.zip'; Expand-Archive -Path '%ROOT%\tools\pt.zip' -DestinationPath '%ROOT%\tools' -Force; Remove-Item '%ROOT%\tools\pt.zip'" ^
+      || ( echo UPOZORENJE: adb nije preuzet - aplikacija ce ga skinuti sama pri prvom koriscenju. )
+) else (
+    echo    adb vec postoji, preskacem.
+)
+
 REM ---------- 3. Pakovanje aplikacije (samostalni .exe) ----------
 echo.
 echo [3/5] Pakovanje aplikacije (PyInstaller - moze potrajati)...

@@ -277,6 +277,27 @@ export async function downloadCaseZip(sessionId) {
   _triggerDownload(blob, `slucaj.zip`);
 }
 
+// ── Setup / provisioning: aplikacija sama preuzme zavisnosti ──────────────
+
+export async function getSetupStatus() {
+  const res = await fetch(`${BASE}/api/setup/status`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { adb:{found,path,bundled}, ollama:{installed,running,model_ready,models,model} }
+}
+
+export async function startSetupAdb() {
+  const res = await fetch(`${BASE}/api/setup/adb`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { job_id }  → prati preko getAcquireJob(job_id)
+}
+
+export async function startSetupOllama(model = '') {
+  const qs = model ? `?model=${encodeURIComponent(model)}` : '';
+  const res = await fetch(`${BASE}/api/setup/ollama${qs}`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { job_id }
+}
+
 // Namenski izveštaj akvizicije (SIM/SD/USB) + preuzimanje paketa slučaja
 export async function downloadAcquisitionReport(caseId, format = 'pdf') {
   const res = await fetch(`${BASE}/api/acquire/case/${caseId}/report?format=${format}`);

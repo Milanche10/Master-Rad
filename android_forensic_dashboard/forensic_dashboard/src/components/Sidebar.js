@@ -122,6 +122,7 @@ export default function Sidebar({
     { id: 'evidence', icon: '≣', label: 'Evidence pregled' },
     { id: 'report', icon: '◧', label: 'Izveštaj' },
     { id: 'case', icon: '⛓', label: 'Slučaj / Audit' },
+    { id: 'setup', icon: '⚙', label: 'Zavisnosti / Setup' },
   ];
 
   return (

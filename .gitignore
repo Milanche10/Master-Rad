@@ -16,6 +16,10 @@ build_pyi/
 **/installer/wix3/
 **/installer/obj/
 **/installer/AppFiles.wxs
+# adb/platform-tools (preuzima ga build/aplikacija; ne deli se u gitu)
+**/tools/platform-tools/
+**/tools/*.zip
+**/tools/OllamaSetup.exe
 
 # ─── Python / backend ───
 __pycache__/
