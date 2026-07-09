@@ -4,15 +4,21 @@ const BASE = '';  // proxy u package.json šalje na localhost:8000
 
 // ── Session management ────────────────────────────────────────────────────
 
-export async function createSession(dumpPath) {
-  // dumpPath je string putanja na serveru (forenzičar unosi putanju do dump foldera)
+export async function createSession(dumpPath, opts = {}) {
+  // dumpPath je putanja do Evidence/dump foldera na serveru.
+  // opts: { examiner, fsCaseId, source } — kada dolazi iz akvizicije, povezuje slučaj.
   const res = await fetch(`${BASE}/api/session`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dump_path: dumpPath }),
+    body: JSON.stringify({
+      dump_path: dumpPath,
+      examiner: opts.examiner || '',
+      fs_case_id: opts.fsCaseId || '',
+      source: opts.source || 'dump',
+    }),
   });
   if (!res.ok) throw new Error(await res.text());
-  return res.json(); // { session_id, dump_path, summary }
+  return res.json(); // { session_id, case_id, summary }
 }
 
 export async function getSession(sessionId) {
@@ -165,4 +171,121 @@ export async function revealArtifactFile(sessionId, path) {
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
+}
+
+// ── Acquisition layer: detekcija izvora + akvizicija ──────────────────────
+
+export async function getSources() {
+  const res = await fetch(`${BASE}/api/sources`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { platform, sources: { mobile:{ready,hint}, ... } }
+}
+
+export async function detectPhone() {
+  const res = await fetch(`${BASE}/api/detect/phone`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { available, devices:[...], reason }
+}
+
+export async function detectSim() {
+  const res = await fetch(`${BASE}/api/detect/sim`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { available, readers:[...], reason }
+}
+
+export async function detectStorage(kind = 'sdcard') {
+  const res = await fetch(`${BASE}/api/detect/storage?kind=${encodeURIComponent(kind)}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { available, disks:[...], reason }
+}
+
+// source: mobile|sim|sdcard|usb ; body zavisi od izvora (mount/disk_info, serial/device_info, reader)
+export async function startAcquisition(source, body = {}) {
+  const res = await fetch(`${BASE}/api/acquire/${source}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { job_id, source }
+}
+
+export async function getAcquireJob(jobId) {
+  const res = await fetch(`${BASE}/api/acquire/job/${jobId}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { status, progress, message, logs, result, case_id, ... }
+}
+
+export async function cancelAcquireJob(jobId) {
+  const res = await fetch(`${BASE}/api/acquire/job/${jobId}/cancel`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+export async function getAcquisitionCases() {
+  const res = await fetch(`${BASE}/api/acquire/cases`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { cases: [...] }
+}
+
+// ── Universal export (svaki prikaz → PDF/DOCX/HTML/TXT; ceo slučaj → .zip) ──
+
+function _triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function _extFor(format) {
+  return { pdf: 'pdf', docx: 'docx', html: 'html', txt: 'txt', text: 'txt' }[format] || format;
+}
+
+// view: dashboard|timeline|correlations|evidence|report|module:<id>
+export async function downloadExport(sessionId, view, format) {
+  if (!sessionId) return;
+  const res = await fetch(
+    `${BASE}/api/session/${sessionId}/export?view=${encodeURIComponent(view)}&format=${format}`);
+  if (!res.ok) throw new Error(await res.text());
+  const blob = await res.blob();
+  const safeView = String(view).replace(':', '_');
+  _triggerDownload(blob, `${safeView}.${_extFor(format)}`);
+}
+
+export async function exportArtifact(sessionId, artifact, format) {
+  if (!sessionId) return;
+  const res = await fetch(
+    `${BASE}/api/session/${sessionId}/export/artifact?format=${format}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artifact }),
+    });
+  if (!res.ok) throw new Error(await res.text());
+  const blob = await res.blob();
+  _triggerDownload(blob, `artefakt.${_extFor(format)}`);
+}
+
+export async function downloadCaseZip(sessionId) {
+  if (!sessionId) return;
+  const res = await fetch(`${BASE}/api/session/${sessionId}/export/case?format=zip`);
+  if (!res.ok) throw new Error(await res.text());
+  const blob = await res.blob();
+  _triggerDownload(blob, `slucaj.zip`);
+}
+
+// Namenski izveštaj akvizicije (SIM/SD/USB) + preuzimanje paketa slučaja
+export async function downloadAcquisitionReport(caseId, format = 'pdf') {
+  const res = await fetch(`${BASE}/api/acquire/case/${caseId}/report?format=${format}`);
+  if (!res.ok) throw new Error(await res.text());
+  _triggerDownload(await res.blob(), `${caseId}_izvestaj.${_extFor(format)}`);
+}
+
+export async function downloadAcquisitionPackage(caseId, format = 'zip') {
+  const res = await fetch(`${BASE}/api/acquire/case/${caseId}/download?format=${format}`);
+  if (!res.ok) throw new Error(await res.text());
+  _triggerDownload(await res.blob(), `${caseId}.${format === 'tar' ? 'tar.gz' : 'zip'}`);
 }

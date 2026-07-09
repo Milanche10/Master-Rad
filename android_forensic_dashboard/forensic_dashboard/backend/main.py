@@ -80,6 +80,14 @@ from report.report_model import build_report_model
 from correlation.rules_registry import registry as correlation_registry
 from ai_analyst import generate_ai_conclusion, ai_available
 
+# ─── Acquisition & Export slojevi (novi; ne diraju analitički engine) ──────
+from acquisition import detect as acq_detect
+from acquisition import jobs as acq_jobs
+from acquisition import cases_fs as acq_cases
+from acquisition import storage as acq_storage
+from export import exporters as exporters_mod
+from export import packager as packager_mod
+
 # ─── Logging ──────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -132,11 +140,29 @@ MODULE_ORDER = list(MODULE_MAP.keys())
 # ─── Pydantic modeli ──────────────────────────────────────────────────────
 class OpenDumpRequest(BaseModel):
     dump_path: str
-    examiner: str = ""   # ime veštaka (chain of custody); opciono
+    examiner: str = ""       # ime veštaka (chain of custody); opciono
+    fs_case_id: str = ""     # ako dolazi iz akvizicije (Case_YYYY_NNNN) — poveži slučaj
+    source: str = "dump"     # izvor dokaza: dump | mobile | sim | sdcard | usb
 
 
 class RevealRequest(BaseModel):
     path: str
+
+
+class ArtifactExportRequest(BaseModel):
+    artifact: dict
+
+
+class AcquireRequest(BaseModel):
+    examiner: str = ""
+    # SD/USB
+    mount: str = ""
+    disk_info: dict = {}
+    # telefon
+    serial: str = ""
+    device_info: dict = {}
+    # SIM
+    reader: str = ""
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -1318,10 +1344,14 @@ def create_session(body: OpenDumpRequest):
     session_id = str(uuid.uuid4())
 
     # Perzistentni slučaj (chain of custody) — ne gubi se na restart.
-    case = case_store.create_case(case_number="", title=device_label, examiner=body.examiner or "nepoznat")
+    # Ako dump dolazi iz akvizicije (fs_case_id), taj Case_YYYY_NNNN se upisuje kao
+    # case_number → analitički slučaj i akvizicioni slučaj su povezani.
+    case = case_store.create_case(case_number=body.fs_case_id or "", title=device_label,
+                                  examiner=body.examiner or "nepoznat")
     audit_log.log_event(
         actor=f"examiner:{body.examiner or 'nepoznat'}", action="open_case",
-        case_id=case["case_id"], params={"dump_path": dump_path, "device": device_label})
+        case_id=case["case_id"], params={"dump_path": dump_path, "device": device_label,
+                                         "source": body.source, "fs_case_id": body.fs_case_id})
 
     SESSIONS[session_id] = {
         "dump_path": dump_path,
@@ -1329,6 +1359,9 @@ def create_session(body: OpenDumpRequest):
         "results": {},
         "created_at": datetime.now(timezone.utc).isoformat(),
         "case_id": case["case_id"],
+        "fs_case_id": body.fs_case_id or "",
+        "source": body.source or "dump",
+        "examiner": body.examiner or "",
     }
 
     logger.info(f"Session {session_id[:8]} opened: {dump_path} (case {case['case_id']})")
@@ -1536,6 +1569,7 @@ def analyze_module(session_id: str, module_name: str):
         return result
 
 
+@app.post("/api/session/{session_id}/analyze/all")
 async def analyze_all(session_id: str):
     """
     Pokreni sve module KONKURENTNO (thread pool) umesto sekvencijalno, obogati
@@ -1827,6 +1861,304 @@ def reveal_artifact_file(session_id: str, body: RevealRequest):
                         case_id=session.get("case_id"), run_id=session.get("_run_id"),
                         params={"path": body.path})
     return {"opened": str(file_path)}
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# ACQUISITION LAYER — detekcija izvora + pokretanje akvizicije (job-ovi)
+# Analitički engine ostaje netaknut: akvizicija samo napravi Evidence/ folder,
+# a onda se poziva postojeći POST /api/session sa tom putanjom.
+# ════════════════════════════════════════════════════════════════════════════
+
+@app.get("/api/sources")
+def get_sources():
+    """Pregled dostupnosti svih izvora (za acquisition wizard)."""
+    return acq_detect.sources_overview()
+
+
+@app.get("/api/detect/phone")
+def detect_phone():
+    return acq_detect.detect_phones()
+
+
+@app.get("/api/detect/sim")
+def detect_sim():
+    return acq_detect.detect_sim_readers()
+
+
+@app.get("/api/detect/storage")
+def detect_storage(kind: str = "sdcard"):
+    return acq_detect.detect_storage(kind if kind in ("sdcard", "usb") else "sdcard")
+
+
+def _acquire_target(source: str):
+    """Mapiranje izvora → driver target funkcija (phone/sim se lenjivo uvoze)."""
+    if source in ("sdcard", "usb"):
+        return acq_storage.acquire_storage
+    if source == "mobile":
+        from acquisition import phone as acq_phone
+        return acq_phone.acquire_phone
+    if source == "sim":
+        from acquisition import sim as acq_sim
+        return acq_sim.acquire_sim
+    raise HTTPException(status_code=400, detail=f"Nepoznat izvor akvizicije: {source}")
+
+
+@app.post("/api/acquire/{source}")
+def start_acquisition(source: str, body: AcquireRequest):
+    """
+    Pokreni akviziciju (asinhrono, u pozadinskoj niti). Vraća job_id za praćenje.
+    source: mobile | sim | sdcard | usb
+    """
+    if source not in ("mobile", "sim", "sdcard", "usb"):
+        raise HTTPException(status_code=400, detail=f"Nepoznat izvor: {source}")
+    target = _acquire_target(source)
+
+    # Kwargs po tipu izvora (prosleđuju se driver funkciji).
+    if source in ("sdcard", "usb"):
+        if not body.mount:
+            raise HTTPException(status_code=400, detail="Nije izabran disk (mount).")
+        kwargs = {"mount": body.mount, "kind": source, "examiner": body.examiner,
+                  "disk_info": body.disk_info or {}}
+    elif source == "mobile":
+        kwargs = {"serial": body.serial, "examiner": body.examiner,
+                  "device_info": body.device_info or {}}
+    else:  # sim
+        kwargs = {"reader_name": body.reader, "examiner": body.examiner}
+
+    job_id = acq_jobs.start_job(source, target, **kwargs)
+    audit_log.log_event(actor=f"examiner:{body.examiner or 'nepoznat'}",
+                        action="start_acquisition",
+                        params={"source": source, "job_id": job_id,
+                                "target": body.mount or body.serial or body.reader})
+    return {"job_id": job_id, "source": source}
+
+
+@app.get("/api/acquire/job/{job_id}")
+def acquire_job_status(job_id: str):
+    j = acq_jobs.get_job(job_id)
+    if not j:
+        raise HTTPException(status_code=404, detail="Posao nije pronađen.")
+    return j
+
+
+@app.post("/api/acquire/job/{job_id}/cancel")
+def acquire_job_cancel(job_id: str):
+    ok = acq_jobs.cancel_job(job_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Posao nije pronađen ili nije aktivan.")
+    audit_log.log_event(actor="examiner", action="cancel_acquisition", params={"job_id": job_id})
+    return {"cancelled": job_id}
+
+
+@app.get("/api/acquire/cases")
+def list_acquisition_cases():
+    """Svi slučajevi na disku (central case manager, akvizicija)."""
+    return {"cases": acq_cases.list_fs_cases()}
+
+
+def _acq_report_model(case_id: str) -> dict:
+    """Nađi report_data slučaja (iz job rezultata ili case.json) i napravi model."""
+    # 1) probaj iz aktivnih job-ova
+    for j in acq_jobs.list_jobs():
+        res = None
+        full = acq_jobs.get_job(j["id"])
+        if full and full.get("result") and full["result"].get("case_id") == case_id:
+            res = full["result"]
+        if res and res.get("report_data"):
+            return packager_mod.model_from_acquisition(res["report_data"])
+    # 2) fallback: iz case.json (osnovni podaci)
+    meta = acq_cases.read_case_meta(case_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Slučaj nije pronađen.")
+    rd = {"kind": meta.get("source", "sdcard"), "case_id": case_id,
+          "device": meta.get("device_info") or {}, "stats": {},
+          "manifest_summary": meta.get("hashes") or {}}
+    return packager_mod.model_from_acquisition(rd)
+
+
+@app.get("/api/acquire/case/{case_id}/report")
+def acquisition_report(case_id: str, format: str = "pdf"):
+    """Namenski izveštaj akvizicije (SIM/SD/USB) u traženom formatu; upiše i u Reports/."""
+    model = _acq_report_model(case_id)
+    try:
+        packager_mod.write_report_set(case_id, model)  # Reports/Full_Report.{pdf,docx,html,txt}
+    except Exception:
+        pass
+    content, media, ext = exporters_mod.render(model, format)
+    audit_log.log_event(actor="system", action="acquisition_report",
+                        params={"case_id": case_id, "format": ext})
+    return _file_response(content, media, f"{case_id}_izvestaj.{ext}")
+
+
+@app.get("/api/acquire/case/{case_id}/download")
+def acquisition_download(case_id: str, format: str = "zip"):
+    """Preuzmi ceo slučaj kao .zip (ili .tar.gz) — Evidence/Reports/Logs/Exports."""
+    try:
+        if format == "tar":
+            data, fname = packager_mod.build_case_tar(case_id)
+            media = "application/gzip"
+        else:
+            data, fname = packager_mod.build_case_zip(case_id)
+            media = "application/zip"
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    audit_log.log_event(actor="examiner", action="export_case_package",
+                        params={"case_id": case_id, "format": format})
+    return _file_response(data, media, fname)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# UNIVERSAL EXPORT — izvezi BILO KOJI prikaz (PDF/DOCX/HTML/TXT) ili ceo slučaj
+# ════════════════════════════════════════════════════════════════════════════
+
+def _file_response(content, media_type: str, filename: str) -> Response:
+    body = content if isinstance(content, (bytes, bytearray)) else str(content).encode("utf-8")
+    return Response(content=body, media_type=media_type,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+def _session_case_meta(session: dict) -> dict:
+    results = session.get("results", {})
+    dev = results.get("device_info", {})
+    dev_findings = {f["key"]: f["value"] for f in dev.get("findings", [])}
+    device = (f'{dev_findings.get("Proizvođač","")} {dev_findings.get("Model","")}').strip() or None
+    return {
+        "case_id": session.get("case_id"),
+        "case_number": session.get("fs_case_id"),
+        "examiner": session.get("examiner"),
+        "source": session.get("source", "dump"),
+        "device": device,
+        "dump_path": session.get("dump_path"),
+        "created_at": session.get("created_at"),
+    }
+
+
+def _flatten_evidence(results: dict) -> list:
+    out = []
+    for module_name, data in results.items():
+        for a in (data.get("artifacts") or []):
+            out.append({**a, "module": a.get("module") or module_name})
+    return out
+
+
+def _build_export_model(session: dict, view: str) -> dict:
+    results = session.get("results", {})
+    meta = _session_case_meta(session)
+    if view == "timeline":
+        return exporters_mod.model_from_timeline(build_timeline(results), meta)
+    if view == "correlations":
+        return exporters_mod.model_from_correlations(build_correlations(results), meta)
+    if view == "evidence":
+        return exporters_mod.model_from_evidence(_flatten_evidence(results), meta)
+    if view == "dashboard":
+        correlations = build_correlations(results)
+        timeline = build_timeline(results)
+        headline = build_headline_timeline(results, correlations)
+        alerts = [a for d in results.values() for a in (d.get("alerts") or [])]
+        pairs = [
+            {"label": "Analizirano modula", "value": len(results)},
+            {"label": "Ukupno artefakata", "value": sum(len(d.get("artifacts") or []) for d in results.values())},
+            {"label": "Upozorenja", "value": len(alerts)},
+            {"label": "Korelacije", "value": len(correlations)},
+            {"label": "Događaja (rekonstrukcija)", "value": len(headline)},
+            {"label": "Događaja (timeline)", "value": len(timeline)},
+        ]
+        return {"title": "Izvršni rezime (Pregled)", "meta": exporters_mod._case_meta(meta),
+                "sections": [{"heading": "Statistika", "type": "keyvalue", "pairs": pairs},
+                             {"heading": f"Upozorenja ({len(alerts)})", "type": "list",
+                              "items": alerts or ["Nema upozorenja."]}]}
+    if view.startswith("module:"):
+        mod = view.split(":", 1)[1]
+        return exporters_mod.model_from_artifacts(mod, results.get(mod, {}), meta)
+    raise HTTPException(status_code=400, detail=f"Nepoznat prikaz za izvoz: {view}")
+
+
+@app.get("/api/session/{session_id}/export")
+def export_view(session_id: str, view: str = "evidence", format: str = "pdf"):
+    """
+    Univerzalni izvoz prikaza. view: dashboard|timeline|correlations|evidence|module:<id>|report.
+    Za 'report' koristi se postojeći puni izveštaj (identično /report endpointu).
+    """
+    session = get_session(session_id)
+    fmt = (format or "pdf").lower()
+
+    if view == "report":
+        # Preusmeri na postojeći, bogati izveštaj (ne dupliramo logiku)
+        if fmt == "pdf":
+            return _file_response(_build_pdf_report(session), "application/pdf",
+                                  f"forenzicki_izvestaj.pdf")
+        if fmt == "docx":
+            return _file_response(_build_docx_report(session),
+                                  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                                  "forenzicki_izvestaj.docx")
+        if fmt == "html":
+            return _file_response(ForensicReportEngine(_collect_report_data(session)).render(),
+                                  "text/html; charset=utf-8", "forenzicki_izvestaj.html")
+        return _file_response(generate_text_report(session), "text/plain; charset=utf-8",
+                              "forenzicki_izvestaj.txt")
+
+    model = _build_export_model(session, view)
+    content, media, ext = exporters_mod.render(model, fmt)
+    audit_log.log_event(actor="examiner", action="export_view",
+                        case_id=session.get("case_id"), run_id=session.get("_run_id"),
+                        params={"view": view, "format": ext})
+    safe_view = view.replace(":", "_")
+    return _file_response(content, media, f"{safe_view}.{ext}")
+
+
+@app.post("/api/session/{session_id}/export/artifact")
+def export_artifact(session_id: str, body: ArtifactExportRequest, format: str = "pdf"):
+    """Izvezi pojedinačni artefakt (detaljan izveštaj) u traženom formatu."""
+    session = get_session(session_id)
+    model = exporters_mod.model_from_single_artifact(body.artifact, _session_case_meta(session))
+    content, media, ext = exporters_mod.render(model, format)
+    audit_log.log_event(actor="examiner", action="export_artifact",
+                        case_id=session.get("case_id"),
+                        params={"artifact_id": (body.artifact or {}).get("id"), "format": ext})
+    return _file_response(content, media, f"artefakt.{ext}")
+
+
+@app.get("/api/session/{session_id}/export/case")
+def export_session_case(session_id: str, format: str = "zip"):
+    """
+    Preuzmi ceo slučaj kao paket. Ako je sesija vezana za akvizicioni slučaj
+    (fs_case_id), pakuje se ceo folder na disku. Inače se pravi paket sa
+    izveštajima (sva 4 formata) + JSON rezultata.
+    """
+    session = get_session(session_id)
+    fs_case_id = session.get("fs_case_id")
+    if fs_case_id and acq_cases.read_case_meta(fs_case_id):
+        # Osveži izveštaje u Reports/ pre pakovanja
+        try:
+            for fmt in ("pdf", "docx", "html", "txt"):
+                content, _m, ext = exporters_mod.render(_build_export_model(session, "evidence"), fmt)
+                out = acq_cases.case_dir(fs_case_id) / "Reports" / f"Analysis_Report.{ext}"
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+        except Exception:
+            pass
+        data, fname = packager_mod.build_case_zip(fs_case_id)
+        audit_log.log_event(actor="examiner", action="export_case_package",
+                            case_id=session.get("case_id"), params={"fs_case_id": fs_case_id})
+        return _file_response(data, "application/zip", fname)
+
+    # Nema FS slučaja (ručni dump) → paket od izveštaja + rezultata
+    import io as _io, zipfile as _zip, json as _json
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w", _zip.ZIP_DEFLATED) as zf:
+        try:
+            zf.writestr("Reports/Full_Report.pdf", _build_pdf_report(session))
+            zf.writestr("Reports/Full_Report.docx", _build_docx_report(session))
+            zf.writestr("Reports/Full_Report.html", ForensicReportEngine(_collect_report_data(session)).render())
+            zf.writestr("Reports/Full_Report.txt", generate_text_report(session))
+        except Exception:
+            pass
+        zf.writestr("Analysis/results.json", _json.dumps(session.get("results", {}), ensure_ascii=False, indent=2))
+        zf.writestr("case.json", _json.dumps(_session_case_meta(session), ensure_ascii=False, indent=2))
+    audit_log.log_event(actor="examiner", action="export_case_package",
+                        case_id=session.get("case_id"), params={"kind": "analysis_only"})
+    tag = (session.get("fs_case_id") or session.get("case_id") or "slucaj")
+    return _file_response(buf.getvalue(), "application/zip", f"{tag}.zip")
 
 
 # ─── Health check ─────────────────────────────────────────────────────────

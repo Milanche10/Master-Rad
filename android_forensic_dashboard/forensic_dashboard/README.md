@@ -11,10 +11,49 @@ izvlači **poruke iz aplikacija** (WhatsApp, Viber, Telegram, Signal, Instagram�
 **beleške i podsetnike**, i generiše **forenzički izveštaj** (tekst / PDF /
 Word / HTML) uz opcioni **AI zaključak preko lokalnog modela**.
 
+Pored analize, aplikacija sada **akvizira dokaze** iz više izvora (telefon preko
+USB/adb, SIM čitač, SD kartica, USB fleš, ili postojeći dump) i svaki rezultat
+**izvozi** u PDF / Word / HTML / TXT — kroz jedan objedinjeni forenzički tok.
+
 Sve radi **lokalno i offline** — nijedan podatak ne napušta mašinu (bitno za
 poverljivost i lanac nadležnosti). Aplikacija **ne menja originalne fajlove** —
 sve čitanje je read-only (SQLite baze se otvaraju preko `file:...?mode=ro`, WAL
-fajlovi se kopiraju u privremeni fajl pre čitanja).
+fajlovi se kopiraju u privremeni fajl pre čitanja; akvizicija samo čita izvor).
+
+---
+
+## Akvizicija dokaza (Acquisition Layer)
+
+Na startu aplikacija otvara **čarobnjak za akviziciju** — izabereš ime veštaka
+(chain of custody) i izvor dokaza:
+
+| Izvor | Šta radi | Zahtev |
+|-------|----------|--------|
+| **📱 Mobilni telefon** | logička akvizicija preko `adb` (korisničko skladište `/sdcard`, `build.prop` iz `getprop`, lista paketa) **ili** analiza postojećeg dump-a | `adb` (Android platform-tools) na PATH + USB debugging |
+| **📶 SIM kartica** | ICCID, IMSI, operater, MCC/MNC, kontakti (ADN), SMS — preko PC/SC APDU | `pyscard` + USB SIM čitač |
+| **💾 SD kartica** | puna akvizicija svih fajlova uz očuvanje strukture i vremena | čitač (uklonjivi disk) |
+| **🔌 USB fleš** | puna akvizicija svih fajlova uz očuvanje strukture i vremena | — |
+| **📁 Postojeći dump** | otvori već napravljen Evidence/dump folder | — |
+
+Svaka akvizicija pravi **forenzički slučaj na disku** (`Case_YYYY_NNNN/` sa
+`Evidence/`, `Analysis/`, `Reports/`, `Exports/`, `Logs/`), računa **MD5 + SHA-1
++ SHA-256** svakog fajla u **manifest** (integritet svakog dokaza), i vodi
+**log akvizicije**. Po završetku, `Evidence/` folder se prosleđuje **postojećem
+analitičkom engine-u** — korisnik ne primeti razliku između ručnog dump-a i
+uređaja akviziranog preko USB-a.
+
+> **Pošteno (forenzička validnost):** ako alat/hardver nije prisutan (`adb`,
+> SIM čitač, uklonjivi disk), akvizicija se gasi sa jasnom porukom — **nikad
+> lažni podatak**. Bez root-a se sa telefona ne mogu izvući privatni podaci
+> aplikacija (`/data/data`) ni IMEI (modem/EFS); to se jasno navodi.
+
+## Univerzalni izvoz (Reporting & Export Layer)
+
+**Svaki** prikaz se izvozi u **PDF / Word (.docx) / HTML / TXT** preko trake za
+izvoz na vrhu svakog taba: Pregled, Timeline, Korelacije, **Evidence pregled**,
+pojedinačni artefakt, i pun izveštaj. Ceo slučaj se preuzima kao **.zip paket**
+(Evidence + Reports u sva 4 formata + Logs). SIM/SD/USB imaju i **namenske
+izveštaje** (SIM identitet, manifest fajlova, statistika akvizicije).
 
 ---
 
@@ -116,13 +155,16 @@ Python ni Node.
 
 ## 3. Korišćenje
 
-1. Na početnom ekranu unesi **putanju do dump foldera** (npr.
-   `C:\...\evidence\Samsung_S10\Dump`) i ime veštaka, pa klikni **Otvori**.
+1. Na startu izabereš **izvor dokaza** u čarobnjaku (telefon / SIM / SD / USB /
+   postojeći dump) i uneseš ime veštaka. Za akviziciju sačekaš da se završi, pa
+   klikneš **Analiziraj dokaze**; za postojeći dump uneseš putanju.
 2. Klikni **Pokreni sve module** (ili pojedinačno u levom meniju).
-3. Pregledaj rezultate kroz tabove:
+3. Pregledaj rezultate kroz tabove (svaki ima traku za **izvoz** PDF/Word/HTML/TXT):
    - **Pregled** — rezime, uređaj, broj artefakata/upozorenja
    - **Korelacije** — ukrštanja između izvora sa skorom i citiranim dokazima
    - **Timeline** — hronologija (glavni događaji / detaljno)
+   - **Evidence pregled** — svi artefakti u jednoj tabeli: pretraga, filteri,
+     izbor i izvoz pojedinačnih dokaza
    - **Galerija** — sve slike i snimci **grupisano po albumima** (Camera,
      Screenshots, Instagram, WhatsApp…); klik = pun pregled + GPS, vreme,
      uređaj, SHA-256 heš, EXIF/stego detalji
