@@ -102,10 +102,15 @@ cd backend && uvicorn main:app --port 8000
 ### Distribucija kao MSI (jedan fajl, bez Python/Node kod korisnika)
 
 Za deljenje kao prava Windows aplikacija: `build_installer.bat` upakuje sve
-(PyInstaller + WiX) u **`AndroidForensicDashboard-Setup.msi`**. Korisnik dobija
-samo taj `.msi`, instalira ga dvoklikom → aplikacija u Program Files + Desktop
-prečica + uninstaller; ne treba mu ni Python ni Node. Detalji:
-[installer/BUILD.md](installer/BUILD.md).
+(PyInstaller → samostalni `.exe`, pa WiX 3 → MSI) u
+**`AndroidForensicDashboard-Setup.msi`** (~135 MB). Korisnik dobija samo taj
+`.msi`, instalira ga dvoklikom kroz čarobnjak → aplikacija u Program Files +
+**Desktop/Start Menu prečica** (ikonica lupe) + uninstaller; ne treba mu ni
+Python ni Node.
+
+> Za **pravljenje** MSI-ja dovoljni su Python 3.11 i Node.js — **.NET SDK nije
+> potreban** (WiX 3 alate skripta sama preuzme; oni traže samo .NET Framework
+> koji je već na svakom Windows-u). Detalji: [installer/BUILD.md](installer/BUILD.md).
 
 ---
 
