@@ -7,6 +7,11 @@ build/
 dist/
 .npm/
 
+# ─── PyInstaller / MSI build artefakti (generisano; ne deli se) ───
+build_pyi/
+*.msi
+*.exe
+
 # ─── Python / backend ───
 __pycache__/
 *.py[cod]

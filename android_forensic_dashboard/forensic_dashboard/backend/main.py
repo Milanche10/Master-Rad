@@ -1840,7 +1840,13 @@ def health():
 # istom portu (localhost:8000). Ovim cela aplikacija radi kao JEDAN proces —
 # instaler ne mora da pokreće zaseban Node server. U dev-u (bez build/) ovo
 # se preskače i koristi se 'npm start' + proxy.
-_BUILD_DIR = Path(__file__).resolve().parent.parent / "build"
+# Kada je aplikacija spakovana (PyInstaller), 'build' se raspakuje u sys._MEIPASS;
+# inače je u ../build (dev/izvorni raspored).
+if getattr(sys, "frozen", False):
+    _BUNDLE = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
+    _BUILD_DIR = _BUNDLE / "build"
+else:
+    _BUILD_DIR = Path(__file__).resolve().parent.parent / "build"
 if _BUILD_DIR.exists() and (_BUILD_DIR / "index.html").exists():
     from fastapi.staticfiles import StaticFiles
     if (_BUILD_DIR / "static").exists():

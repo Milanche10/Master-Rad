@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  WiX 4/5 izvor za MSI instaler Android Forensic Dashboard-a.
+  Pakuje PyInstaller izlaz (dist/AndroidForensicDashboard/) u .msi sa
+  Start Menu + Desktop prečicom i pravim uninstaller-om.
+
+  Build (iz korena projekta):
+    wix build installer\AFD.wxs -o dist\AndroidForensicDashboard-Setup.msi
+  (putanje u <Files Include> su relativne na koren projekta.)
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Android Forensic Dashboard"
+           Manufacturer="Milan Jovanovic"
+           Version="1.0.0.0"
+           UpgradeCode="6f3a9e2c-1b4d-4e7a-9c21-8a5b0d3f7e11"
+           Scope="perMachine">
+
+    <MajorUpgrade DowngradeErrorMessage="Novija verzija je vec instalirana." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="public\favicon.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/Milanche10/Master-Rad" />
+
+    <!-- Ciljni direktorijumi -->
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Android Forensic Dashboard" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppMenuDir" Name="Android Forensic Dashboard" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+    <!-- Feature: svi fajlovi aplikacije + prečice -->
+    <Feature Id="Main" Title="Android Forensic Dashboard" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="DesktopShortcut" />
+    </Feature>
+
+    <!-- Harvest cele PyInstaller dist mape u INSTALLFOLDER -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Files Include="dist\AndroidForensicDashboard\**" />
+    </ComponentGroup>
+
+    <!-- Start Menu prečica -->
+    <Component Id="StartMenuShortcut" Directory="AppMenuDir" Guid="a1f2b3c4-0001-4a11-9b22-000000000001">
+      <Shortcut Id="StartSc"
+                Name="Android Forensic Dashboard"
+                Description="Forenzicka analiza Android dump-ova"
+                Target="[INSTALLFOLDER]AndroidForensicDashboard.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon" />
+      <RemoveFolder Id="RemoveAppMenuDir" Directory="AppMenuDir" On="uninstall" />
+      <RegistryValue Root="HKCU" Key="Software\AndroidForensicDashboard"
+                     Name="startmenu" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+    <!-- Desktop prečica -->
+    <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="a1f2b3c4-0002-4a11-9b22-000000000002">
+      <Shortcut Id="DeskSc"
+                Name="Android Forensic Dashboard"
+                Description="Forenzicka analiza Android dump-ova"
+                Target="[INSTALLFOLDER]AndroidForensicDashboard.exe"
+                WorkingDirectory="INSTALLFOLDER"
+                Icon="AppIcon" />
+      <RegistryValue Root="HKCU" Key="Software\AndroidForensicDashboard"
+                     Name="desktop" Type="integer" Value="1" KeyPath="yes" />
+    </Component>
+
+  </Package>
+</Wix>

@@ -99,6 +99,14 @@ cd backend && uvicorn main:app --port 8000
 > Dev mod (hot-reload, dva porta): `start.bat` / `start.sh` — pokreće backend
 > na `:8000` i React dev server na `:3000`.
 
+### Distribucija kao MSI (jedan fajl, bez Python/Node kod korisnika)
+
+Za deljenje kao prava Windows aplikacija: `build_installer.bat` upakuje sve
+(PyInstaller + WiX) u **`AndroidForensicDashboard-Setup.msi`**. Korisnik dobija
+samo taj `.msi`, instalira ga dvoklikom → aplikacija u Program Files + Desktop
+prečica + uninstaller; ne treba mu ni Python ni Node. Detalji:
+[installer/BUILD.md](installer/BUILD.md).
+
 ---
 
 ## 3. Korišćenje
