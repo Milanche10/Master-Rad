@@ -21,12 +21,13 @@ export function useForensicSession() {
   // Ref za praćenje aktivnog session-a (korisno za cleanup)
   const activeSession = useRef(null);
 
-  // ── Otvori dump ───────────────────────────────────────────────────────
-  const openDump = useCallback(async (dumpPath) => {
+  // ── Otvori dump (ili Evidence folder iz akvizicije) ───────────────────
+  // opts: { examiner, fsCaseId, source } — prosleđuje se kada dolazi iz akvizicije.
+  const openDump = useCallback(async (dumpPath, opts = {}) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await api.createSession(dumpPath);
+      const data = await api.createSession(dumpPath, opts);
       setSessionId(data.session_id);
       setSessionInfo(data.summary);
       activeSession.current = data.session_id;

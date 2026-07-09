@@ -19,6 +19,12 @@ hiddenimports = collect_submodules("uvicorn") + [
     "mutagen", "mutagen.mp4",
     "reportlab", "reportlab.pdfbase", "reportlab.pdfbase.ttfonts",
     "docx", "requests", "sqlite3", "anyio", "starlette", "email_validator",
+    # Acquisition/export slojevi — phone.py i sim.py se lenjivo uvoze (unutar
+    # funkcija), pa ih PyInstaller statička analiza ne bi sama uhvatila.
+    "acquisition", "acquisition.base", "acquisition.cases_fs", "acquisition.jobs",
+    "acquisition.detect", "acquisition.storage", "acquisition.phone", "acquisition.sim",
+    "export", "export.exporters", "export.packager",
+    "tarfile", "zipfile", "csv",
 ]
 
 # Teški paketi sa dinamičkim importima / data fajlovima

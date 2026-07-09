@@ -2,16 +2,18 @@ import { useState } from 'react';
 import { C } from './utils/constants';
 import { useForensicSession } from './hooks/useForensicSession';
 
-import Sidebar       from './components/Sidebar';
-import OpenDump      from './components/OpenDump';
-import Dashboard     from './components/Dashboard';
-import ModulePanel   from './components/ModulePanel';
-import Correlations  from './components/Correlations';
-import Timeline      from './components/Timeline';
-import Report        from './components/Report';
-import CaseInfo      from './components/CaseInfo';
-import Gallery       from './components/Gallery';
-import ArtifactModal from './components/ArtifactModal';
+import Sidebar          from './components/Sidebar';
+import AcquisitionWizard from './components/AcquisitionWizard';
+import Dashboard        from './components/Dashboard';
+import ModulePanel      from './components/ModulePanel';
+import Correlations     from './components/Correlations';
+import Timeline         from './components/Timeline';
+import Report           from './components/Report';
+import CaseInfo         from './components/CaseInfo';
+import Gallery          from './components/Gallery';
+import EvidenceBrowser  from './components/EvidenceBrowser';
+import ExportManager    from './components/ExportManager';
+import ArtifactModal    from './components/ArtifactModal';
 
 export default function App() {
   const session = useForensicSession();
@@ -19,18 +21,25 @@ export default function App() {
   const [activeModule, setActiveModule] = useState(null);
   const [selectedArtifact, setSelectedArtifact] = useState(null);
 
-  // Nema aktivne sesije → prikaži Open Dump ekran
+  // Nema aktivne sesije → prikaži akvizicioni čarobnjak (izbor izvora dokaza)
   if (!session.sessionId) {
     return (
       <div style={{ display: 'flex', height: '100%', background: C.bg }}>
-        <OpenDump
-          onOpen={session.openDump}
+        <AcquisitionWizard
+          onAnalyze={session.openDump}
           loading={session.loading}
           error={session.error}
         />
       </div>
     );
   }
+
+  // Mapiranje aktivnog taba → 'view' string za univerzalni izvoz
+  const exportView =
+    activeTab === 'module' && activeModule ? `module:${activeModule}` :
+    activeTab === 'gallery' ? 'evidence' :
+    activeTab === 'case' ? 'report' :
+    activeTab;
 
   const handleSelectModule = (moduleId) => {
     setActiveModule(moduleId);
@@ -89,14 +98,13 @@ export default function App() {
       <main style={{
         flex: 1,
         display: 'flex',
+        flexDirection: 'column',
         overflow: 'hidden',
         position: 'relative',
       }}>
         {/* Error banner */}
         {session.error && (
           <div style={{
-            position: 'absolute',
-            top: 0, left: 0, right: 0,
             background: C.redDim,
             borderBottom: `1px solid ${C.red}44`,
             padding: '8px 16px',
@@ -108,6 +116,18 @@ export default function App() {
             ⚠ {session.error}
           </div>
         )}
+
+        {/* Univerzalni izvoz — traka za izvoz tekućeg prikaza (PDF/Word/HTML/TXT) */}
+        <div style={{
+          display: 'flex', justifyContent: 'flex-end', alignItems: 'center',
+          padding: '6px 16px', borderBottom: `1px solid ${C.border}`, background: C.bgPanel,
+          flexShrink: 0,
+        }}>
+          <ExportManager sessionId={session.sessionId} view={exportView} />
+        </div>
+
+        {/* Sadržaj aktivnog taba */}
+        <div style={{ flex: 1, display: 'flex', overflow: 'hidden', position: 'relative' }}>
 
         {activeTab === 'dashboard' && (
           <Dashboard
@@ -173,6 +193,15 @@ export default function App() {
         {activeTab === 'case' && (
           <CaseInfo sessionId={session.sessionId} />
         )}
+
+        {activeTab === 'evidence' && (
+          <EvidenceBrowser
+            sessionId={session.sessionId}
+            results={session.results}
+            onOpen={setSelectedArtifact}
+          />
+        )}
+        </div>
       </main>
 
       {selectedArtifact && (

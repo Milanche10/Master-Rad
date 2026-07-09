@@ -119,6 +119,7 @@ export default function Sidebar({
     { id: 'correlations', icon: '◈', label: `Korelacije${correlationCount ? ` (${correlationCount})` : ''}` },
     { id: 'timeline', icon: '◫', label: `Timeline${timelineCount ? ` (${timelineCount})` : ''}` },
     { id: 'gallery', icon: '▤', label: 'Galerija' },
+    { id: 'evidence', icon: '≣', label: 'Evidence pregled' },
     { id: 'report', icon: '◧', label: 'Izveštaj' },
     { id: 'case', icon: '⛓', label: 'Slučaj / Audit' },
   ];
