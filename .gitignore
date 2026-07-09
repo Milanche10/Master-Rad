@@ -11,6 +11,11 @@ dist/
 build_pyi/
 *.msi
 *.exe
+*.wixobj
+*.wixpdb
+**/installer/wix3/
+**/installer/obj/
+**/installer/AppFiles.wxs
 
 # ─── Python / backend ───
 __pycache__/
