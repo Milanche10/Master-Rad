@@ -12,10 +12,13 @@ Sve funkcije vraćaju {"available": bool, ...}. Kada hardver/alat nije prisutan,
 
 import json
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
 
 WINDOWS = sys.platform.startswith("win")
 _CREATE_NO_WINDOW = 0x08000000 if WINDOWS else 0
@@ -33,6 +36,94 @@ def _run(cmd, timeout=20) -> tuple[int, str, str]:
         return 124, "", "timeout"
     except Exception as e:
         return 1, "", str(e)
+
+
+def terminate_proc(proc):
+    """Ubij proces I njegovu decu (adb pokreće podprocese) — cross-platform."""
+    try:
+        if WINDOWS:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, creationflags=_CREATE_NO_WINDOW)
+        else:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+    except Exception:
+        pass
+
+
+def run_streaming(cmd, progress=None, on_line=None, timeout=1800, stall_timeout=120):
+    """
+    Pokreni dugu komandu (npr. `adb pull`) i strimuj stdout liniju-po-liniju.
+    Rešava „zaglavljenu" akviziciju:
+      • progress.cancelled() → ubija proces (i decu) i vraća 130,
+      • stall_timeout → nema izlaza toliko sekundi → ubija (hang) i vraća 125,
+      • timeout → ukupno gornje ograničenje → ubija i vraća 124.
+    on_line(line) se poziva za svaku ne-praznu liniju (za napredak/log).
+    Vraća (rc, tail_text). rc: 0 ok; 124 timeout; 125 zastoj; 130 otkazano;
+    127 komanda nije nađena; -1 druga greška.
+    Nikad ne blokira duže od stall_timeout bez provere otkazivanja.
+    """
+    try:
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, encoding="utf-8", errors="replace", bufsize=1,
+            creationflags=_CREATE_NO_WINDOW)
+    except FileNotFoundError:
+        return 127, "not found"
+    except Exception as e:
+        return -1, str(e)
+
+    q: queue.Queue = queue.Queue()
+
+    def _reader():
+        try:
+            for line in proc.stdout:
+                q.put(line)
+        except Exception:
+            pass
+        finally:
+            q.put(None)  # sentinel: kraj izlaza
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+    start = last = time.time()
+    tail: list[str] = []
+    forced_rc = 0
+    while True:
+        if progress is not None and progress.cancelled():
+            terminate_proc(proc); forced_rc = 130; break
+        now = time.time()
+        if now - start > timeout:
+            terminate_proc(proc); forced_rc = 124; break
+        if stall_timeout and now - last > stall_timeout:
+            terminate_proc(proc); forced_rc = 125; break
+        try:
+            line = q.get(timeout=1.0)
+        except queue.Empty:
+            continue
+        if line is None:
+            break
+        last = time.time()
+        line = line.rstrip("\r\n")
+        if line:
+            tail.append(line)
+            if len(tail) > 60:
+                tail = tail[-60:]
+            if on_line:
+                try:
+                    on_line(line)
+                except Exception:
+                    pass
+    try:
+        rc = proc.wait(timeout=5)
+    except Exception:
+        rc = -1
+    if forced_rc:
+        rc = forced_rc
+    return rc, "\n".join(tail)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

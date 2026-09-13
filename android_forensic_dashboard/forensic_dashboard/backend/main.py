@@ -1598,10 +1598,38 @@ async def analyze_all(session_id: str):
                                  "alerts": [str(e)], "error": str(e)}
 
     # Konkurentno izvršavanje u bounded thread pool-u; ne blokira event loop.
+    # ZAŠTITA OD ZAGLAVLJIVANJA: svaki modul ima vremenski limit — ako jedan
+    # modul „visi" (npr. spor QR/opencv na telefonu bez tragova), on se preskoči
+    # sa jasnim zapisom umesto da zablokira celu analizu. (Sami moduli su i
+    # interno ograničeni; ovo je dodatna mreža sigurnosti.)
+    MODULE_TIMEOUT_SEC = 240
     loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=min(6, len(MODULE_MAP))) as pool:
-        tasks = [loop.run_in_executor(pool, _run_one, name, fn) for name, fn in MODULE_MAP.items()]
-        completed = await asyncio.gather(*tasks)
+    pool = ThreadPoolExecutor(max_workers=min(6, len(MODULE_MAP)))
+
+    async def _bounded(name, fn):
+        fut = loop.run_in_executor(pool, _run_one, name, fn)
+        try:
+            # shield: wait_for ne može da ubije nit, ali nas ne blokira preko limita
+            return await asyncio.wait_for(asyncio.shield(fut), timeout=MODULE_TIMEOUT_SEC)
+        except asyncio.TimeoutError:
+            logger.error(f"Module {name} timeout after {MODULE_TIMEOUT_SEC}s — preskočen")
+            try:
+                if session.get("_run_id"):
+                    case_store.save_error(session["_run_id"], name, "TimeoutError",
+                                          f"prekoračen limit {MODULE_TIMEOUT_SEC}s", "")
+            except Exception:
+                pass
+            return name, {"status": "error", "findings": [], "artifacts": [],
+                          "alerts": [f"Modul '{name}' je prekoračio vremenski limit "
+                                     f"({MODULE_TIMEOUT_SEC}s) i preskočen je da ne bi "
+                                     f"blokirao analizu."],
+                          "error": "timeout"}
+
+    try:
+        completed = await asyncio.gather(*[_bounded(n, f) for n, f in MODULE_MAP.items()])
+    finally:
+        # wait=False: ne blokiramo na eventualnoj „visećoj" niti prekoračenog modula
+        pool.shutdown(wait=False)
 
     # Deterministički redosled (po MODULE_MAP), ne po redosledu završetka
     order = list(MODULE_MAP.keys())

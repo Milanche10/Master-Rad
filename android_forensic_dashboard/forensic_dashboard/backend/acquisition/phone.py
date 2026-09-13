@@ -130,33 +130,87 @@ def _write_build_prop(ev: Path, props: dict) -> dict:
     return written
 
 
+# adb `pull` ispisuje redove poput "[ 45%] /sdcard/DCIM/IMG.jpg" i na kraju
+# "N files pulled, 0 skipped." — parsiramo ih za napredak/log.
+_PULL_PCT_RE = re.compile(r"\[\s*(\d+)%\]")
+
+
 def _pull_sdcard(adb: str, serial: str, ev: Path, progress) -> dict:
     """
-    Best-effort: `adb pull -a /sdcard/. <ev>/data/media/0`.
-    Uz USB debugging /sdcard je čitljiv i bez root-a. Na grešci loguje i
-    nastavlja (ne baca izuzetak). Vraća {ok, rc, note}.
+    Preuzmi korisničko skladište (/sdcard) uz OTKAZIVANJE, napredak i zaštitu
+    od zastoja. Umesto jednog blokirajućeg `adb pull /sdcard/.` (koji je znao
+    da „zaglavi" bez ikakvog feedbacka), enumerišemo top-level unose /sdcard i
+    pullujemo ih pojedinačno — tako je napredak vidljiv, otkazivanje radi, a
+    jedan ogroman/zaključan poddirektorijum (npr. Android/) se prekine po
+    zastoju bez rušenja cele akvizicije. Read-only nad uređajem. Vraća {ok, note}.
     """
-    dst = ev / "data" / "media" / "0"
+    dst_root = ev / "data" / "media" / "0"
     try:
-        dst.mkdir(parents=True, exist_ok=True)
+        dst_root.mkdir(parents=True, exist_ok=True)
     except Exception:
         pass
-    progress.update(30, "Preuzimanje korisničkog skladišta (/sdcard)…")
-    progress.log("adb pull -a /sdcard/. → data/media/0 (može potrajati)…")
-    # -a: očuvaj vremenske pečate i mod fajlova (bliže originalnim metapodacima).
-    rc, out, err = detect._run(
-        _adb_cmd(adb, serial, "pull", "-a", "/sdcard/.", str(dst)),
-        timeout=1800,  # do 30 min za veliko skladište
-    )
-    tail = (out.strip().splitlines()[-1] if out.strip() else "") or \
-           (err.strip().splitlines()[-1] if err.strip() else "")
-    if rc == 0:
-        progress.log(f"Skladište preuzeto (/sdcard). {tail}".strip())
-        return {"ok": True, "rc": rc, "note": tail}
-    progress.log(f"Preuzimanje /sdcard nije uspelo (rc={rc}): "
-                 f"{err.strip() or out.strip() or 'nepoznata greška'}")
-    return {"ok": False, "rc": rc,
-            "note": (err.strip() or out.strip() or f"rc={rc}")}
+
+    def _on_line(line: str):
+        # Loguj samo relevantne redove (putanje/rezime), da log ne eksplodira.
+        if line.startswith("/sdcard") or "pulled" in line or "skipped" in line \
+                or "error" in line.lower():
+            progress.log(line[:160])
+
+    # 1) Enumeriši top-level unose /sdcard (kratko, sa timeout-om).
+    progress.update(28, "Popisivanje korisničkog skladišta (/sdcard)…")
+    rc, out, _ = detect._run(_adb_cmd(adb, serial, "shell", "ls", "-1", "/sdcard/"), timeout=25)
+    entries = [e.strip() for e in out.splitlines() if e.strip() and "No such file" not in e] \
+        if rc == 0 else []
+
+    notes: list[str] = []
+    ok_any = False
+
+    if entries:
+        progress.log(f"Preuzimam /sdcard po stavkama ({len(entries)}): {', '.join(entries[:8])}"
+                     + (" …" if len(entries) > 8 else ""))
+        total = len(entries)
+        for i, name in enumerate(entries):
+            if progress.cancelled():
+                notes.append("Otkazano tokom preuzimanja /sdcard.")
+                break
+            base_pct = 30 + int(i / total * 45)   # 30 → 75%
+            progress.update(base_pct, f"Preuzimanje /sdcard/{name} ({i + 1}/{total})…")
+            # `adb pull -a /sdcard/<name> <dst_root>` → kreira <dst_root>/<name>
+            rc2, tail = detect.run_streaming(
+                _adb_cmd(adb, serial, "pull", "-a", f"/sdcard/{name}", str(dst_root)),
+                progress=progress, on_line=_on_line,
+                timeout=1200, stall_timeout=90)
+            if rc2 == 0:
+                ok_any = True
+            elif rc2 == 130:
+                notes.append("Otkazano tokom preuzimanja /sdcard.")
+                progress.log(f"Otkazano tokom /sdcard/{name}.")
+                break
+            elif rc2 in (124, 125):
+                reason = "vremenski limit" if rc2 == 124 else "zastoj (nema napretka)"
+                notes.append(f"/sdcard/{name}: prekinuto ({reason}) — moguće delimično preuzeto.")
+                progress.log(f"/sdcard/{name}: prekinuto ({reason}); nastavljam sa ostatkom.")
+                ok_any = ok_any or True  # deo je verovatno preuzet
+            else:
+                notes.append(f"/sdcard/{name}: neuspešno (rc={rc2}).")
+                progress.log(f"/sdcard/{name}: rc={rc2} {(tail or '')[-120:]}")
+        return {"ok": ok_any, "rc": 0 if ok_any else 1,
+                "note": ("; ".join(notes) if notes else "OK"), "per_item": True}
+
+    # 2) Fallback: jedan streaming pull celog /sdcard (uz zaštitu od zastoja).
+    progress.update(30, "Preuzimanje /sdcard (jedinstveno)…")
+    progress.log("Enumeracija /sdcard nije uspela — pokušavam pun `adb pull -a /sdcard/.`")
+    rc3, tail = detect.run_streaming(
+        _adb_cmd(adb, serial, "pull", "-a", "/sdcard/.", str(dst_root)),
+        progress=progress, on_line=_on_line, timeout=1800, stall_timeout=120)
+    if rc3 == 0:
+        progress.log("Skladište preuzeto (/sdcard).")
+        return {"ok": True, "rc": 0, "note": "OK (pun pull)"}
+    if rc3 == 130:
+        return {"ok": False, "rc": 130, "note": "otkazano"}
+    reason = {124: "vremenski limit", 125: "zastoj (hang) — prekinuto"}.get(rc3, f"rc={rc3}")
+    progress.log(f"Preuzimanje /sdcard prekinuto: {reason}. {(tail or '')[-120:]}")
+    return {"ok": False, "rc": rc3, "note": reason}
 
 
 def _pull_packages(adb: str, serial: str, ev: Path, progress) -> int:

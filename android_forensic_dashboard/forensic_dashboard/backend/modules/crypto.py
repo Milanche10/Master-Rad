@@ -12,6 +12,7 @@ i detekcija wallet aplikacija se i dalje izvršavaju.
 """
 
 import re
+import time
 from pathlib import Path
 
 from utils.dump_resolver import DumpResolver
@@ -25,6 +26,12 @@ IMAGE_SEARCH_DIRS = [
     "data/media/0/Download",
 ]
 MAX_IMAGES_FOR_QR = 300
+# Zaštita od „zaglavljivanja" na telefonima sa mnogo/velikih fotografija:
+# QR skeniranje nikad ne sme da dominira analizom, pa ima tvrdi vremenski budžet,
+# a slike se smanjuju pre detekcije (QR ostaje čitljiv, a detekcija je mnogo brža).
+QR_TIME_BUDGET_SEC = 90
+QR_MAX_DIM = 1600
+MAX_IMAGES_ENUM = MAX_IMAGES_FOR_QR * 6   # ne nabrajaj beskonačno na ogromnom DCIM-u
 
 TEXT_EXTENSIONS = {".xml", ".json", ".txt", ".db", ".sqlite"}
 # data/data je obično symlink na data/user/0 — neki dump-ovi sadrže samo
@@ -63,6 +70,7 @@ _QR_STATUS = {"engine": None, "reason": ""}
 
 def _scan_qr_codes(resolver: DumpResolver) -> list[dict]:
     results = []
+    _QR_STATUS["budget_note"] = ""   # reset po pokretanju (globalni dict)
     try:
         import cv2
         _QR_STATUS["engine"] = "opencv"
@@ -79,20 +87,52 @@ def _scan_qr_codes(resolver: DumpResolver) -> list[dict]:
     image_files: list[Path] = []
     for rel_dir in IMAGE_SEARCH_DIRS:
         full_dir = resolver.root / rel_dir
-        if full_dir.exists():
-            for f in full_dir.rglob("*"):
+        if not full_dir.exists():
+            continue
+        for f in full_dir.rglob("*"):
+            try:
                 if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS:
                     image_files.append(f)
+            except Exception:
+                continue
+            if len(image_files) >= MAX_IMAGES_ENUM:
+                break
+        if len(image_files) >= MAX_IMAGES_ENUM:
+            break
 
+    # Skeniraj manje slike prve (screenshot-ovi sa QR kodovima su obično mali
+    # PNG-ovi) — u okviru budžeta stignemo najverovatnije relevantne prve.
+    try:
+        image_files.sort(key=lambda p: p.stat().st_size)
+    except Exception:
+        pass
+
+    start = time.time()
+    scanned = 0
     for img_path in image_files[:MAX_IMAGES_FOR_QR]:
+        # Tvrdi vremenski budžet: QR skeniranje NIKAD ne blokira analizu.
+        if time.time() - start > QR_TIME_BUDGET_SEC:
+            _QR_STATUS["budget_note"] = (
+                f"QR skeniranje zaustavljeno posle {QR_TIME_BUDGET_SEC}s "
+                f"(skenirano {scanned} od {min(len(image_files), MAX_IMAGES_FOR_QR)} slika).")
+            break
         try:
             img = cv2.imread(str(img_path))
             if img is None:
                 continue
+            # Downscale velikih fotografija — QR detekcija je i dalje pouzdana,
+            # a mnogo brža (12MP foto -> ~1600px se skenira u milisekundama).
+            h, w = img.shape[:2]
+            longest = max(h, w)
+            if longest > QR_MAX_DIM:
+                scale = QR_MAX_DIM / float(longest)
+                img = cv2.resize(img, (max(1, int(w * scale)), max(1, int(h * scale))),
+                                 interpolation=cv2.INTER_AREA)
             data, points, _ = detector.detectAndDecode(img)
         except Exception:
             continue
 
+        scanned += 1
         if data:
             rel_path = str(img_path.relative_to(resolver.root)) if resolver.root in img_path.parents else str(img_path)
             results.append({"file": rel_path, "filename": img_path.name, "data": data})
@@ -226,6 +266,11 @@ def analyze(dump_path: str) -> dict:
             "Kripto adrese u QR kodovima nisu očitane — zato blockchain modul "
             "nema adresa za verifikaciju. Popravi opencv/numpy pa ponovo pokreni."
         )
+
+    # Ako je QR skeniranje zaustavljeno po vremenskom budžetu — pošteno navedi
+    # (nije greška; sprečava „zaglavljivanje" na telefonima sa mnogo fotografija).
+    if _QR_STATUS.get("budget_note"):
+        findings.append(finding("QR skener (vremenski budžet)", _QR_STATUS["budget_note"]))
 
     # ── 3. Regex pretraga adresa ─────────────────────────────────────────
     text_results = _scan_text_for_addresses(resolver)
