@@ -47,6 +47,23 @@ uređaja akviziranog preko USB-a.
 > lažni podatak**. Bez root-a se sa telefona ne mogu izvući privatni podaci
 > aplikacija (`/data/data`) ni IMEI (modem/EFS); to se jasno navodi.
 
+### Metoda akvizicije telefona (LOGICAL / FILE-SYSTEM / PHYSICAL / AUTO)
+
+Kad se izabere **Mobilni telefon**, aplikacija detektuje sposobnosti uređaja
+(ADB autorizacija, postojeći root) i nudi metode akvizicije — **nedostupne su
+onemogućene uz razlog**:
+
+- **LOGICAL** — `/sdcard`, `build.prop` (iz `getprop`), lista paketa (bez root-a).
+- **FILE-SYSTEM** — dostupno **samo uz potvrđen root**; prikuplja i `/data`
+  (aplikacione baze) preko `adb exec-out su -c tar` (read-only na uređaju).
+- **PHYSICAL** — prijavljuje se kao **nedostupno** (nema podržanog mehanizma bez
+  eksploita/zaobilaženja zaštite).
+- **AUTO** — bira najbolju dostupnu metodu.
+
+Ručno izabrana metoda se **nikad tiho ne spušta** na slabiju — ako je nedostupna,
+akvizicija staje sa jasnim razlogom. Root se **samo detektuje** (postojeći `su`),
+nikad ne eksploatiše. Izabrana metoda i sposobnosti se upisuju u izveštaj.
+
 ## Univerzalni izvoz (Reporting & Export Layer)
 
 **Svaki** prikaz se izvozi u **PDF / Word (.docx) / HTML / TXT** preko trake za

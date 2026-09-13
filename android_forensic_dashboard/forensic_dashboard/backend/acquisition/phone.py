@@ -28,7 +28,12 @@ preskače, kao i u ostatku acquisition sloja.
 import re
 from pathlib import Path
 
-from . import base, cases_fs, detect
+from . import base, cases_fs, detect, capabilities
+
+# /data poddrveta koja se prikupljaju u FILE-SYSTEM akviziciji (samo sa root-om).
+# Putanje su relativne na / (tar -C /) → ekstrakcija daje Android-FS raspored
+# (data/data/<paket>, data/system, data/misc…) koji postojeći DumpResolver čita.
+_FS_DATA_SUBTREES = ["data/data", "data/system", "data/misc", "data/user", "data/user_de"]
 
 # Regex za `getprop` izlaz: linije oblika  [ro.product.model]: [SM-G973F]
 _PROP_RE = re.compile(r"\[([^\]]+)\]:\s*\[([^\]]*)\]")
@@ -213,6 +218,77 @@ def _pull_sdcard(adb: str, serial: str, ev: Path, progress) -> dict:
     return {"ok": False, "rc": rc3, "note": reason}
 
 
+def _pull_data_via_root(adb: str, serial: str, ev: Path, progress, cid: str) -> dict:
+    """
+    FILE-SYSTEM akvizicija (spec §14–15): sa POTVRĐENIM root-om prikupi /data
+    poddrveta preko `adb exec-out su -c 'tar -c -C / …'` (sirov binarni stream),
+    pa raspakuj u Evidence u Android-FS rasporedu. Read-only na uređaju
+    (tar samo čita; ništa se ne piše na telefon). Vraća {ok, bytes, extracted, tar_sha256, note}.
+    """
+    progress.update(58, "File-system akvizicija: /data preko root-a (tar)…")
+    progress.log("adb exec-out su -c 'tar -c -C / " + " ".join(_FS_DATA_SUBTREES) +
+                 "' (root, read-only na uređaju)")
+    tar_path = ev / "Metadata" / "_filesystem_data.tar"
+    try:
+        tar_path.parent.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    subtrees = " ".join(_FS_DATA_SUBTREES)
+    cmd = _adb_cmd(adb, serial, "exec-out", "su", "-c",
+                   f"tar -c -C / {subtrees} 2>/dev/null")
+
+    def _on_bytes(n):
+        mb = n // 1048576
+        progress.update(min(74, 58 + int(mb / 400 * 16)),
+                        f"File-system: preuzeto {mb} MB /data…")
+
+    rc, nbytes = detect.run_to_file(cmd, str(tar_path), progress=progress,
+                                    timeout=3600, stall_timeout=180, on_bytes=_on_bytes)
+    if rc == 130:
+        try:
+            tar_path.unlink()
+        except Exception:
+            pass
+        return {"ok": False, "rc": 130, "note": "otkazano", "bytes": nbytes}
+    if rc != 0 or nbytes < 512:
+        note = {124: "vremenski limit", 125: "zastoj (nema napretka)"}.get(rc, f"rc={rc}")
+        progress.log(f"File-system tar nije uspeo ({note}, {nbytes} B) — moguće da su "
+                     f"prava/root nedovoljni. Prelaz na logical nije automatski (spec §14).")
+        try:
+            tar_path.unlink()
+        except Exception:
+            pass
+        return {"ok": False, "rc": rc, "note": note, "bytes": nbytes}
+
+    tar_hashes = base.compute_hashes(tar_path)   # provenance heš sirovog tar-a
+    progress.update(75, "Raspakivanje /data (tar) u Evidence…")
+    extracted = 0
+    try:
+        import tarfile
+        with tarfile.open(str(tar_path)) as tf:
+            for m in tf.getmembers():
+                try:
+                    tf.extract(m, path=str(ev), filter="data")  # bezbedno (bez path traversal)
+                    if m.isfile():
+                        extracted += 1
+                except Exception:
+                    continue
+    except Exception as e:
+        progress.log(f"Raspakivanje tar-a delimično/neuspešno: {e}")
+
+    try:
+        tar_path.unlink()   # sirovi tar može biti GB; heš je zabeležen (provenance)
+    except Exception:
+        pass
+
+    cases_fs.append_log(cid, f"File-system (root): /data → {extracted} fajlova raspakovano "
+                             f"({nbytes // 1048576} MB tar, SHA-256 {(tar_hashes or {}).get('sha256','?')[:16]}…).")
+    progress.log(f"File-system akvizicija: raspakovano {extracted} fajlova iz /data.")
+    return {"ok": True, "rc": 0, "bytes": nbytes, "extracted": extracted,
+            "tar_sha256": (tar_hashes or {}).get("sha256"), "note": "OK"}
+
+
 def _pull_packages(adb: str, serial: str, ev: Path, progress) -> int:
     """
     `adb shell pm list packages` → ev/data/system/packages.list (po jedan
@@ -288,12 +364,16 @@ def _build_manifest(ev: Path, cid: str, progress) -> tuple:
 
 
 def acquire_phone(progress, serial: str = "", examiner: str = "",
-                  device_info: dict = None) -> dict:
+                  device_info: dict = None, method: str = "logical") -> dict:
     """
-    Target funkcija za jobs.start_job. Logička akvizicija USB Android telefona
-    preko adb. Vraća dict po ugovoru drajvera:
-    {case_id, source, evidence_path, case_path, stats, device,
-     report_data, cancelled}.
+    Target funkcija za jobs.start_job. Akvizicija USB Android telefona preko adb.
+    `method`: logical | file_system | physical | auto (spec §10,§40).
+      • Uvek se rade logički koraci (build.prop, /sdcard, lista paketa).
+      • FILE_SYSTEM dodatno prikuplja /data preko root-a (ako je root potvrđen).
+      • PHYSICAL / nedostupna ručno izabrana metoda → PREKID sa razlogom
+        (NIKAD tihi downgrade — spec §40,§46).
+    Vraća dict po ugovoru drajvera:
+    {case_id, source, evidence_path, case_path, stats, device, report_data, cancelled}.
     """
     device_info = device_info or {}
 
@@ -319,6 +399,25 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
         cases_fs.append_log(cid, f"Ciljani uređaj (serijski): {serial}.")
 
     notes = []
+    fs_result = None
+
+    # ── 2b. Sposobnosti + izbor metode (spec §6–10, §40, §46) ────────────
+    progress.update(8, "Detekcija sposobnosti uređaja (capabilities)…")
+    caps_info = capabilities.detect_capabilities(serial)
+    caps = caps_info.get("capabilities", {})
+    try:
+        effective_method, method_note = capabilities.resolve_method(method, caps)
+    except RuntimeError as e:
+        # Ručno izabrana metoda je nedostupna → jasno prekini (bez tihog downgrade-a).
+        cases_fs.append_log(cid, f"Akvizicija prekinuta: {e}")
+        cases_fs.update_case_meta(cid, status="failed")
+        raise
+    progress.log(f"Metoda akvizicije: {effective_method.upper()} — {method_note}")
+    cases_fs.append_log(
+        cid, f"Sposobnosti: logical={caps.get('logical_available')}, "
+             f"filesystem={caps.get('filesystem_available')} "
+             f"(root={caps.get('root_available')}), physical={caps.get('physical_available')}. "
+             f"Izabrana metoda: {effective_method}.")
 
     # ── 3. build.prop iz getprop ─────────────────────────────────────────
     progress.update(12, "Očitavanje svojstava uređaja (getprop)…")
@@ -353,7 +452,8 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
 
     if progress.cancelled():
         return _finish(cid, ev, case, device, None, False, 0, notes,
-                       progress, cancelled=True)
+                       progress, cancelled=True, method=effective_method,
+                       capabilities_dict=caps, fs_result=fs_result)
 
     # ── 4. Korisničko skladište (/sdcard) ────────────────────────────────
     pull = _pull_sdcard(adb, serial, ev, progress)
@@ -365,27 +465,47 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
 
     if progress.cancelled():
         return _finish(cid, ev, case, device, None, False, 0, notes,
-                       progress, cancelled=True)
+                       progress, cancelled=True, method=effective_method,
+                       capabilities_dict=caps, fs_result=fs_result)
 
     # ── 5. Instalirane aplikacije ────────────────────────────────────────
     packages_count = _pull_packages(adb, serial, ev, progress)
     cases_fs.append_log(cid, f"Instaliranih paketa: {packages_count} "
                              f"(→ data/system/packages.list).")
 
-    # ── 6. Pošteno ograničenje: /data/data bez root-a ────────────────────
-    limitation = ("Aplikacioni privatni podaci (/data/data/<paket>) NISU "
-                  "prikupljeni — nedostupni su bez root pristupa. Baze SMS-a, "
-                  "poziva i aplikacija stoga nisu obuhvaćene ovom logičkom "
-                  "akvizicijom (prikupljeno: /sdcard, svojstva uređaja, lista paketa).")
-    notes.append(limitation)
-    notes.append("IMEI (modem/EFS particija) i izbrisani prostor nisu dostupni "
-                 "u logičkoj akviziciji bez root-a.")
-    progress.log(limitation)
-    cases_fs.append_log(cid, limitation)
+    if progress.cancelled():
+        return _finish(cid, ev, case, device, None, False, packages_count, notes,
+                       progress, cancelled=True, method=effective_method,
+                       capabilities_dict=caps, fs_result=fs_result)
+
+    # ── 5b. FILE-SYSTEM akvizicija /data (samo ako je metoda FILE_SYSTEM) ─
+    if effective_method == capabilities.AcquisitionMethod.FILE_SYSTEM:
+        fs_result = _pull_data_via_root(adb, serial, ev, progress, cid)
+        if not (fs_result and fs_result.get("ok")):
+            notes.append("File-system akvizicija /data nije uspela ("
+                         + str((fs_result or {}).get("note")) + "). Prikupljeni su "
+                         "logički podaci (/sdcard, svojstva, paketi); /data nije obuhvaćen.")
+
+    # ── 6. Pošteno beleženje obima i ograničenja (spec §13,§46) ──────────
+    if effective_method == capabilities.AcquisitionMethod.FILE_SYSTEM and fs_result and fs_result.get("ok"):
+        note = (f"Metoda: FILE-SYSTEM (root). Pored /sdcard prikupljeni su i aplikacioni "
+                f"privatni podaci: /data/data, /data/system, /data/misc, /data/user "
+                f"({fs_result.get('extracted', 0)} fajlova iz /data).")
+    else:
+        note = ("Metoda: LOGICAL. Aplikacioni privatni podaci (/data/data/<paket>) NISU "
+                "prikupljeni — nedostupni su bez root-a. Prikupljeno: /sdcard, svojstva "
+                "uređaja, lista paketa. Baze SMS-a/poziva/aplikacija iz /data nisu obuhvaćene.")
+    notes.append(note)
+    notes.append("IMEI (modem/EFS particija), fizička particija i nealocirani/izbrisani "
+                 "prostor nisu dostupni ovom akvizicijom (fizička metoda nije podržana "
+                 "bez namenskog backend-a — spec §16).")
+    progress.log(note)
+    cases_fs.append_log(cid, note)
 
     if progress.cancelled():
         return _finish(cid, ev, case, device, None, False, packages_count, notes,
-                       progress, cancelled=True)
+                       progress, cancelled=True, method=effective_method,
+                       capabilities_dict=caps, fs_result=fs_result)
 
     # ── 7. Manifest (integritet) ─────────────────────────────────────────
     manifest, capped, seen_total = _build_manifest(ev, cid, progress)
@@ -403,11 +523,13 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
 
     return _finish(cid, ev, case, device, manifest, capped, packages_count,
                    notes, progress, cancelled=progress.cancelled(),
-                   summary=summary)
+                   summary=summary, method=effective_method,
+                   capabilities_dict=caps, fs_result=fs_result)
 
 
 def _finish(cid, ev, case, device, manifest, capped, packages_count, notes,
-            progress, cancelled=False, summary=None):
+            progress, cancelled=False, summary=None, method="logical",
+            capabilities_dict=None, fs_result=None):
     """
     Zajednički završetak: upiši manifest ako još nije (rani izlaz zbog
     otkazivanja), ažuriraj case.json i sastavi povratni dict po ugovoru.
@@ -434,6 +556,7 @@ def _finish(cid, ev, case, device, manifest, capped, packages_count, notes,
     cases_fs.update_case_meta(
         cid,
         status="cancelled" if cancelled else "acquired",
+        acquisition_method=method,
         hashes={"manifest_files": summary["file_count"],
                 "total_bytes": summary["total_bytes"],
                 "total_size_human": summary["total_size_human"]},
@@ -445,10 +568,16 @@ def _finish(cid, ev, case, device, manifest, capped, packages_count, notes,
     else:
         progress.update(100, "Akvizicija telefona završena.")
 
+    if isinstance(device, dict):
+        device = {**device, "acquisition_method": method}
+
     report_data = {
         "kind": "mobile",
         "case_id": cid,
         "device": device,
+        "acquisition_method": method,
+        "capabilities": capabilities_dict or {},
+        "filesystem_result": fs_result,
         "stats": stats,
         "manifest_summary": summary,
         "packages_count": packages_count,

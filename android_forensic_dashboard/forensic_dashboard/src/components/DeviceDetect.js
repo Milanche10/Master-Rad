@@ -85,6 +85,8 @@ export default function DeviceDetect({ source, examiner, onStarted, onBack }) {
   const [selected, setSelected] = useState(null);
   const [starting, setStarting] = useState(false);
   const [err, setErr] = useState(null);
+  const [caps, setCaps] = useState(null);          // sposobnosti + metode (samo za mobile)
+  const [methodSel, setMethodSel] = useState('auto');
 
   const refresh = useCallback(async () => {
     setState({ loading: true });
@@ -102,7 +104,27 @@ export default function DeviceDetect({ source, examiner, onStarted, onBack }) {
 
   useEffect(() => { refresh(); }, [refresh]);
 
+  // Za telefon: po izboru uređaja učitaj sposobnosti (dostupne metode akvizicije).
+  useEffect(() => {
+    if (source !== 'mobile' || !selected) { setCaps(null); return; }
+    let alive = true;
+    setCaps({ loading: true });
+    api.detectPhoneCapabilities(selected)
+      .then((d) => {
+        if (!alive) return;
+        setCaps(d);
+        const methods = d.methods || [];
+        const auto = methods.find((m) => m.method === 'auto' && m.available);
+        const firstAvail = methods.find((m) => m.available && m.method !== 'auto');
+        setMethodSel(auto ? 'auto' : (firstAvail ? firstAvail.method : 'auto'));
+      })
+      .catch((e) => { if (alive) setCaps({ error: e.message }); });
+    return () => { alive = false; };
+  }, [source, selected]);
+
   const items = state[cfg.listKey] || [];
+  const methodAvailable = source !== 'mobile'
+    || !!(caps && caps.methods && caps.methods.some((m) => m.method === methodSel && m.available));
 
   const start = async () => {
     const item = items.find((it) => cfg.idOf(it) === selected);
@@ -110,8 +132,11 @@ export default function DeviceDetect({ source, examiner, onStarted, onBack }) {
     setStarting(true);
     setErr(null);
     try {
-      const { job_id } = await api.startAcquisition(source, cfg.body(item, examiner));
-      onStarted(job_id, cfg.render(item).title);
+      const body = cfg.body(item, examiner);
+      if (source === 'mobile') body.method = methodSel;
+      const { job_id } = await api.startAcquisition(source, body);
+      const label = cfg.render(item).title + (source === 'mobile' ? ` · ${methodSel}` : '');
+      onStarted(job_id, label);
     } catch (e) {
       setErr(e.message);
       setStarting(false);
@@ -184,6 +209,56 @@ export default function DeviceDetect({ source, examiner, onStarted, onBack }) {
         );
       })}
 
+      {/* Izbor metode akvizicije — SAMO za telefon, kad je uređaj izabran (spec §6,§39) */}
+      {source === 'mobile' && selected && caps && caps.loading && (
+        <div style={{ color: C.textMuted, fontSize: 12, fontFamily: C.fontMono, margin: '10px 0' }}>
+          Detekcija sposobnosti uređaja…
+        </div>
+      )}
+      {source === 'mobile' && selected && caps && caps.error && (
+        <div style={{ color: C.red, fontSize: 12, fontFamily: C.fontMono, margin: '10px 0' }}>
+          ⚠ {caps.error}
+        </div>
+      )}
+      {source === 'mobile' && selected && caps && !caps.loading && !caps.error && (caps.methods || []).length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontFamily: C.fontMono, fontSize: 10, color: C.textMuted, letterSpacing: 1, margin: '12px 0 8px' }}>
+            METODA AKVIZICIJE
+          </div>
+          {caps.methods.map((m) => {
+            const on = m.available;
+            const sel = methodSel === m.method;
+            return (
+              <button
+                key={m.method}
+                onClick={() => on && setMethodSel(m.method)}
+                disabled={!on}
+                style={{
+                  display: 'block', width: '100%', textAlign: 'left', marginBottom: 6,
+                  background: sel ? C.accentDim : C.bgCard,
+                  border: `1px solid ${sel && on ? C.accent : C.border}`,
+                  borderRadius: 6, padding: '9px 12px',
+                  cursor: on ? 'pointer' : 'not-allowed', opacity: on ? 1 : 0.55,
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: on ? C.textPrimary : C.textMuted, fontFamily: C.fontMono, fontSize: 12, fontWeight: 600 }}>
+                    {sel && on ? '◉' : '○'} {m.label}
+                  </span>
+                  <span style={{
+                    fontFamily: C.fontMono, fontSize: 9, letterSpacing: 1, padding: '2px 6px', borderRadius: 3,
+                    color: on ? C.green : C.textMuted, background: on ? C.greenDim : C.border,
+                  }}>{on ? 'DOSTUPNO' : 'NEDOSTUPNO'}</span>
+                </div>
+                {!on && m.reason && (
+                  <div style={{ color: C.textMuted, fontSize: 10, marginTop: 3, lineHeight: 1.4 }}>{m.reason}</div>
+                )}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {err && (
         <div style={{ color: C.red, fontSize: 12, fontFamily: C.fontMono, margin: '10px 0' }}>⚠ {err}</div>
       )}
@@ -192,14 +267,17 @@ export default function DeviceDetect({ source, examiner, onStarted, onBack }) {
         {onBack && <button onClick={onBack} style={btn(C.bgCard, C.textSecondary)}>← Nazad</button>}
         <button
           onClick={start}
-          disabled={!selected || starting}
+          disabled={!selected || starting || !methodAvailable}
           style={{
-            ...btn(selected && !starting ? C.accent : C.accentDim, selected && !starting ? C.bg : C.textMuted),
+            ...btn(selected && !starting && methodAvailable ? C.accent : C.accentDim,
+                   selected && !starting && methodAvailable ? C.bg : C.textMuted),
             flex: 1, fontWeight: 600,
-            cursor: selected && !starting ? 'pointer' : 'not-allowed',
+            cursor: selected && !starting && methodAvailable ? 'pointer' : 'not-allowed',
           }}
         >
-          {starting ? 'Pokretanje…' : '▶ Započni akviziciju'}
+          {starting ? 'Pokretanje…'
+            : (source === 'mobile' && !methodAvailable ? 'Izaberi dostupnu metodu'
+               : '▶ Započni akviziciju')}
         </button>
       </div>
     </div>

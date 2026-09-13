@@ -126,6 +126,68 @@ def run_streaming(cmd, progress=None, on_line=None, timeout=1800, stall_timeout=
     return rc, "\n".join(tail)
 
 
+def run_to_file(cmd, out_path, progress=None, timeout=3600, stall_timeout=120, on_bytes=None):
+    """
+    Pokreni komandu i piši njen BINARNI stdout u fajl (npr.
+    `adb exec-out su -c 'tar -c ...'` za file-system akviziciju sa root-om).
+    Zastoj se meri po RASTU izlaznog fajla (a ne po linijama). Podržava
+    otkazivanje/zastoj/timeout uz ubijanje procesa (i dece). Vraća (rc, bytes).
+    rc: 0 ok; 124 timeout; 125 zastoj; 130 otkazano; 127 nema komande; -1 greška.
+    """
+    try:
+        fh = open(out_path, "wb")
+    except Exception:
+        return -1, 0
+    try:
+        proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.DEVNULL,
+                                creationflags=_CREATE_NO_WINDOW)
+    except FileNotFoundError:
+        fh.close(); return 127, 0
+    except Exception:
+        fh.close(); return -1, 0
+
+    start = last = time.time()
+    last_size = 0
+    forced_rc = 0
+    while True:
+        if proc.poll() is not None:
+            break
+        if progress is not None and progress.cancelled():
+            terminate_proc(proc); forced_rc = 130; break
+        now = time.time()
+        try:
+            size = os.path.getsize(out_path)
+        except Exception:
+            size = last_size
+        if size > last_size:
+            last_size = size
+            last = now
+            if on_bytes:
+                try:
+                    on_bytes(size)
+                except Exception:
+                    pass
+        if now - start > timeout:
+            terminate_proc(proc); forced_rc = 124; break
+        if stall_timeout and now - last > stall_timeout:
+            terminate_proc(proc); forced_rc = 125; break
+        time.sleep(0.5)
+
+    try:
+        rc = proc.wait(timeout=5)
+    except Exception:
+        rc = -1
+    try:
+        fh.close()
+    except Exception:
+        pass
+    try:
+        final = os.path.getsize(out_path)
+    except Exception:
+        final = last_size
+    return (forced_rc or rc), final
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # TELEFON — adb
 # ═══════════════════════════════════════════════════════════════════════════

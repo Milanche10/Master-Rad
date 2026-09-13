@@ -153,11 +153,52 @@ def _sim_report_model(rd: dict) -> dict:
             "meta": _meta_from_case(rd.get("case_id", "")), "sections": sections}
 
 
+def _mobile_report_model(rd: dict) -> dict:
+    """Izveštaj o akviziciji telefona: izvor + METODA + uređaj + obim/ograničenja (spec §38)."""
+    dev = rd.get("device") or {}
+    caps = rd.get("capabilities") or {}
+    stats = rd.get("stats") or {}
+    msum = rd.get("manifest_summary") or {}
+    fsr = rd.get("filesystem_result") or {}
+    method = (rd.get("acquisition_method") or "logical").upper()
+    sections = [
+        {"heading": "Izvor i metoda akvizicije", "type": "keyvalue", "pairs": [
+            {"label": "Izvor", "value": "Mobilni telefon (USB / adb)"},
+            {"label": "Metoda akvizicije", "value": method},
+            {"label": "Logical", "value": f"{caps.get('logical_available')}"},
+            {"label": "File-system", "value": f"{caps.get('filesystem_available')} — {caps.get('filesystem_reason','')}"},
+            {"label": "Physical", "value": f"{caps.get('physical_available')} — {caps.get('physical_reason','')}"},
+        ]},
+        {"heading": "Uređaj", "type": "keyvalue", "pairs": [
+            {"label": "Proizvođač", "value": dev.get("manufacturer")},
+            {"label": "Model", "value": dev.get("model")},
+            {"label": "Android", "value": dev.get("android")},
+            {"label": "SDK", "value": dev.get("sdk")},
+            {"label": "Security patch", "value": dev.get("security_patch")},
+            {"label": "Serijski", "value": dev.get("serial")},
+        ]},
+        {"heading": "Statistika akvizicije", "type": "keyvalue", "pairs": [
+            {"label": "Fajlova u manifestu", "value": msum.get("file_count")},
+            {"label": "Ukupno podataka", "value": msum.get("total_size_human")},
+            {"label": "Instaliranih paketa", "value": rd.get("packages_count")},
+            {"label": "/data raspakovano (file-system)", "value": (fsr.get("extracted") if fsr else None)},
+        ]},
+    ]
+    notes = rd.get("notes") or []
+    if notes:
+        sections.append({"heading": "Obim i ograničenja (nalaz)", "type": "list", "items": notes})
+    return {"title": _SRC_TITLE.get("mobile", "Izveštaj o akviziciji telefona"),
+            "subtitle": f"Slučaj {rd.get('case_id','')} · metoda: {method}",
+            "meta": _meta_from_case(rd.get("case_id", "")), "sections": sections}
+
+
 def model_from_acquisition(report_data: dict) -> dict:
     """report_data['kind'] ∈ {sdcard, usb, sim, mobile} → document model."""
     kind = (report_data or {}).get("kind", "sdcard")
     if kind == "sim":
         return _sim_report_model(report_data)
+    if kind == "mobile":
+        return _mobile_report_model(report_data)
     return _storage_report_model(report_data)
 
 

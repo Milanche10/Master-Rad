@@ -86,6 +86,8 @@ from acquisition import detect as acq_detect
 from acquisition import jobs as acq_jobs
 from acquisition import cases_fs as acq_cases
 from acquisition import storage as acq_storage
+from acquisition import capabilities as acq_caps
+from acquisition import backends as acq_backends
 from export import exporters as exporters_mod
 from export import packager as packager_mod
 from provisioning import provision as provisioning
@@ -163,6 +165,7 @@ class AcquireRequest(BaseModel):
     # telefon
     serial: str = ""
     device_info: dict = {}
+    method: str = "auto"   # logical | file_system | physical | auto (Android)
     # SIM
     reader: str = ""
 
@@ -1910,6 +1913,17 @@ def detect_phone():
     return acq_detect.detect_phones()
 
 
+@app.get("/api/detect/phone/capabilities")
+def detect_phone_capabilities(serial: str = ""):
+    """
+    Sposobnosti uređaja + dostupne metode akvizicije (LOGICAL/FILE_SYSTEM/PHYSICAL/AUTO)
+    sa razlozima za nedostupne — za ekran izbora metode (spec §6–10, §39).
+    """
+    info = acq_caps.detect_capabilities(serial)
+    info["methods"] = acq_backends.list_methods(info.get("capabilities", {}))
+    return info
+
+
 @app.get("/api/detect/sim")
 def detect_sim():
     return acq_detect.detect_sim_readers()
@@ -1951,7 +1965,7 @@ def start_acquisition(source: str, body: AcquireRequest):
                   "disk_info": body.disk_info or {}}
     elif source == "mobile":
         kwargs = {"serial": body.serial, "examiner": body.examiner,
-                  "device_info": body.device_info or {}}
+                  "device_info": body.device_info or {}, "method": body.method or "auto"}
     else:  # sim
         kwargs = {"reader_name": body.reader, "examiner": body.examiner}
 

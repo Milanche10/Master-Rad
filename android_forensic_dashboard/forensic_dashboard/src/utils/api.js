@@ -187,6 +187,13 @@ export async function detectPhone() {
   return res.json(); // { available, devices:[...], reason }
 }
 
+export async function detectPhoneCapabilities(serial = '') {
+  const qs = serial ? `?serial=${encodeURIComponent(serial)}` : '';
+  const res = await fetch(`${BASE}/api/detect/phone/capabilities${qs}`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json(); // { device, capabilities, methods:[{method,label,available,reason}], reason }
+}
+
 export async function detectSim() {
   const res = await fetch(`${BASE}/api/detect/sim`);
   if (!res.ok) throw new Error(await res.text());
