@@ -11,6 +11,7 @@ const SOURCES = [
   { id: 'sdcard', icon: '💾', label: 'SD kartica', desc: 'Puna akvizicija fajlova + heš (MD5/SHA)' },
   { id: 'usb', icon: '🔌', label: 'USB fleš disk', desc: 'Puna akvizicija fajlova + heš (MD5/SHA)' },
   { id: 'dump', icon: '📁', label: 'Postojeći dump', desc: 'Analiziraj postojeći Evidence/dump folder' },
+  { id: 'image', icon: '💿', label: 'Forenzička slika', desc: 'raw / dd / .img (userdata.img, izlaz eksternog alata)' },
 ];
 
 export default function AcquisitionWizard({ onAnalyze, loading, error }) {
@@ -18,6 +19,8 @@ export default function AcquisitionWizard({ onAnalyze, loading, error }) {
   const [source, setSource] = useState(null);
   const [examiner, setExaminer] = useState('');
   const [dumpPath, setDumpPath] = useState('');
+  const [imagePath, setImagePath] = useState('');
+  const [localErr, setLocalErr] = useState('');
   const [job, setJob] = useState({ id: null, label: '' });
   const [result, setResult] = useState(null);
   const [sources, setSources] = useState(null);
@@ -27,9 +30,23 @@ export default function AcquisitionWizard({ onAnalyze, loading, error }) {
 
   const pick = (id) => {
     setSource(id);
+    setLocalErr('');
     if (id === 'dump') setStep('dump');
+    else if (id === 'image') setStep('image');
     else if (id === 'mobile') setStep('mobile-choice');
     else setStep('detect');
+  };
+
+  const startImage = async () => {
+    if (!imagePath.trim()) return;
+    setLocalErr('');
+    try {
+      const { job_id } = await api.startAcquisition('image', { examiner, image_path: imagePath.trim() });
+      setJob({ id: job_id, label: imagePath.trim().split(/[\\/]/).pop() });
+      setStep('progress');
+    } catch (e) {
+      setLocalErr(e.message);
+    }
   };
 
   const reset = () => { setStep('source'); setSource(null); setJob({ id: null, label: '' }); setResult(null); };
@@ -170,6 +187,39 @@ export default function AcquisitionWizard({ onAnalyze, loading, error }) {
                 {loading ? '...' : 'Analiziraj →'}
               </button>
             </div>
+            <BackBtn onClick={reset} />
+          </div>
+        )}
+
+        {/* KORAK: forenzička slika (raw/dd/.img) — parsiranje pytsk3 */}
+        {step === 'image' && (
+          <div style={{ maxWidth: 620, margin: '0 auto' }}>
+            <h2 style={{ fontFamily: C.fontMono, fontSize: 18, color: C.textPrimary }}>Forenzička slika (raw / dd / .img)</h2>
+            <p style={{ color: C.textSecondary, fontSize: 13, marginBottom: 6 }}>
+              Putanja do sirove slike: <b>userdata.img</b> iz fizičke akvizicije, dd particija,
+              ili izlaz eksternog alata (mtkclient, EDL…). Slika se parsira (The Sleuth Kit) i analizira.
+            </p>
+            <p style={{ color: C.textMuted, fontSize: 11, marginBottom: 14, lineHeight: 1.5 }}>
+              ⚠ Šifrovan userdata (Android FBE) se ne može parsirati bez ključeva — čitljive podatke
+              daje file-system (root) akvizicija. Ako FS nije prepoznat, to se pošteno prijavi.
+            </p>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input value={imagePath} onChange={(e) => setImagePath(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && startImage()}
+                placeholder="C:\\Cases\\...\\userdata.img"
+                style={{ flex: 1, background: C.bgInput, border: `1px solid ${imagePath ? C.borderFocus : C.border}`,
+                  borderRadius: 6, padding: '10px 14px', color: C.textCode, fontFamily: C.fontMono, fontSize: 13, outline: 'none' }} />
+              <button onClick={startImage} disabled={!imagePath.trim()} style={{
+                background: imagePath.trim() ? C.accent : C.accentDim,
+                color: imagePath.trim() ? C.bg : C.textMuted, border: 'none', borderRadius: 6,
+                padding: '10px 20px', fontFamily: C.fontMono, fontSize: 12, fontWeight: 600,
+                cursor: imagePath.trim() ? 'pointer' : 'not-allowed' }}>
+                Parsiraj →
+              </button>
+            </div>
+            {localErr && (
+              <div style={{ color: C.red, fontSize: 12, fontFamily: C.fontMono, marginTop: 10 }}>⚠ {localErr}</div>
+            )}
             <BackBtn onClick={reset} />
           </div>
         )}

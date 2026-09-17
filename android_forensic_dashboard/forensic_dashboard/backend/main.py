@@ -168,6 +168,8 @@ class AcquireRequest(BaseModel):
     method: str = "auto"   # logical | file_system | physical | auto (Android)
     # SIM
     reader: str = ""
+    # Forenzička slika (raw/dd/.img)
+    image_path: str = ""
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -1944,6 +1946,9 @@ def _acquire_target(source: str):
     if source == "sim":
         from acquisition import sim as acq_sim
         return acq_sim.acquire_sim
+    if source == "image":
+        from acquisition import image_import as acq_image
+        return acq_image.acquire_image
     raise HTTPException(status_code=400, detail=f"Nepoznat izvor akvizicije: {source}")
 
 
@@ -1953,7 +1958,7 @@ def start_acquisition(source: str, body: AcquireRequest):
     Pokreni akviziciju (asinhrono, u pozadinskoj niti). Vraća job_id za praćenje.
     source: mobile | sim | sdcard | usb
     """
-    if source not in ("mobile", "sim", "sdcard", "usb"):
+    if source not in ("mobile", "sim", "sdcard", "usb", "image"):
         raise HTTPException(status_code=400, detail=f"Nepoznat izvor: {source}")
     target = _acquire_target(source)
 
@@ -1966,6 +1971,10 @@ def start_acquisition(source: str, body: AcquireRequest):
     elif source == "mobile":
         kwargs = {"serial": body.serial, "examiner": body.examiner,
                   "device_info": body.device_info or {}, "method": body.method or "auto"}
+    elif source == "image":
+        if not body.image_path:
+            raise HTTPException(status_code=400, detail="Nije zadata putanja do slike.")
+        kwargs = {"image_path": body.image_path, "examiner": body.examiner}
     else:  # sim
         kwargs = {"reader_name": body.reader, "examiner": body.examiner}
 

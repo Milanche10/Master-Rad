@@ -64,6 +64,42 @@ Ručno izabrana metoda se **nikad tiho ne spušta** na slabiju — ako je nedost
 akvizicija staje sa jasnim razlogom. Root se **samo detektuje** (postojeći `su`),
 nikad ne eksploatiše. Izabrana metoda i sposobnosti se upisuju u izveštaj.
 
+### Analiza forenzičke slike (raw / dd / .img) — The Sleuth Kit
+
+Izvor **💿 Forenzička slika** uvozi sirovu sliku (`userdata.img` iz fizičke
+akvizicije, `dd` particija, ili izlaz eksternog alata) i parsira je preko
+**pytsk3 (The Sleuth Kit)** — prepoznaje particije i fajl sisteme (ext4/FAT/NTFS/
+HFS…), ekstrahuje fajlove u Evidence stablo, hešira original i sve fajlove, pa se
+analizira postojećim engine-om. Original slike se ne menja.
+
+> **Enkripcija (bitno):** moderni Android (npr. S10 / Android 10) koristi
+> File-Based Encryption. Sirov `dd` userdata sa zaključanog uređaja je **šifrovan**
+> — TSK tada FS ne prepoznaje i to se **pošteno prijavi**. Čitljive podatke daje
+> **file-system (root)** akvizicija (`tar` nad otključanim uređajem, gde OS
+> dešifruje fajlove pri čitanju).
+
+### Kako rade komercijalni alati (Cellebrite) i šta je open-source
+
+Cellebrite/XRY/GrayKey do FS/fizičke akvizicije **bez trajnog rutovanja** dolaze
+preko **eksploita**, specifičnih za čipset: EDL (Qualcomm firehose loaderi),
+BootROM bagovi (MediaTek), privremeni root-agent u memoriji, `checkm8` (stariji
+iOS). To je suštinski **zaobilaženje bezbednosti** — a spec ovog rada (§9, §16,
+§46) i etika izričito zabranjuju ugrađivanje eksploita u alat.
+
+Zato je podela poslova ovakva (kao u pravoj DFIR praksi):
+
+- **Akviziciju eksploitom** radi namenski, eksterni alat koji veštak pokreće na
+  uređaju **za koji ima zakonsko ovlašćenje**. Open-source primeri:
+  - **`mtkclient`** (bkerler) — MediaTek BootROM: pun dump flash-a bez root-a i
+    bez otključavanja bootloader-a (najbliži open-source „Cellebrite" za MTK).
+  - **`edl`** (bkerler) — Qualcomm EDL/firehose (traži loader po uređaju).
+  - Za Exynos (S10 SM-G973F): otključavanje bootloader-a + Odin (okida Knox), ili
+    komercijalni alat — nema čistog no-trace open-source rešenja.
+- **Analizu dobijene slike** radi OVAJ alat (izvor „Forenzička slika" → pytsk3).
+
+Tako alat ostaje forenzički i etički ispravan (bez eksploita), a ipak pokriva ceo
+lanac: eksterna akvizicija → uvoz slike → analiza → izveštaj.
+
 ## Univerzalni izvoz (Reporting & Export Layer)
 
 **Svaki** prikaz se izvozi u **PDF / Word (.docx) / HTML / TXT** preko trake za

@@ -31,6 +31,8 @@ hiddenimports = collect_submodules("uvicorn") + [
     # funkcija), pa ih PyInstaller statička analiza ne bi sama uhvatila.
     "acquisition", "acquisition.base", "acquisition.cases_fs", "acquisition.jobs",
     "acquisition.detect", "acquisition.storage", "acquisition.phone", "acquisition.sim",
+    "acquisition.capabilities", "acquisition.backends", "acquisition.image_import",
+    "analysis", "analysis.image_parser", "pytsk3",
     "export", "export.exporters", "export.packager",
     "tarfile", "zipfile", "csv",
 ]

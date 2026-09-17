@@ -196,13 +196,47 @@ def _mobile_report_model(rd: dict) -> dict:
             "meta": _meta_from_case(rd.get("case_id", "")), "sections": sections}
 
 
+def _image_report_model(rd: dict) -> dict:
+    """Izveštaj o uvozu/parsiranju forenzičke slike (raw/dd/.img) — spec §17–18."""
+    img = rd.get("image") or {}
+    ps = rd.get("parse_stats") or {}
+    msum = rd.get("manifest_summary") or {}
+    fslist = ps.get("filesystems") or []
+    sections = [
+        {"heading": "Izvor i integritet slike", "type": "keyvalue", "pairs": [
+            {"label": "Izvor", "value": "Forenzička slika (raw/dd/.img) — uvoz + parsiranje (pytsk3)"},
+            {"label": "Naziv", "value": img.get("name")},
+            {"label": "Veličina", "value": (f"{(img.get('size') or 0)//1048576} MB")},
+            {"label": "SHA-256 (original)", "value": img.get("sha256")},
+        ]},
+        {"heading": "Rezultat parsiranja", "type": "keyvalue", "pairs": [
+            {"label": "Prepoznatih fajl sistema", "value": ps.get("partitions")},
+            {"label": "Neprepoznatih (šifrovano/f2fs)", "value": ps.get("unrecognized")},
+            {"label": "Ekstrahovano fajlova", "value": ps.get("files")},
+            {"label": "Zapisa u manifestu", "value": msum.get("file_count")},
+        ]},
+    ]
+    if fslist:
+        sections.append({"heading": "Fajl sistemi u slici", "type": "table",
+                         "columns": ["Oznaka", "Prepoznat", "userdata"],
+                         "rows": [[f.get("label"), "da" if f.get("recognized") else "NE",
+                                   "da" if f.get("userdata") else ""] for f in fslist]})
+    notes = rd.get("notes") or []
+    if notes:
+        sections.append({"heading": "Napomene (nalaz)", "type": "list", "items": notes})
+    return {"title": "Izveštaj o forenzičkoj slici", "subtitle": f"Slučaj {rd.get('case_id','')}",
+            "meta": _meta_from_case(rd.get("case_id", "")), "sections": sections}
+
+
 def model_from_acquisition(report_data: dict) -> dict:
-    """report_data['kind'] ∈ {sdcard, usb, sim, mobile} → document model."""
+    """report_data['kind'] ∈ {sdcard, usb, sim, mobile, image} → document model."""
     kind = (report_data or {}).get("kind", "sdcard")
     if kind == "sim":
         return _sim_report_model(report_data)
     if kind == "mobile":
         return _mobile_report_model(report_data)
+    if kind == "image":
+        return _image_report_model(report_data)
     return _storage_report_model(report_data)
 
 
