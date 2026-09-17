@@ -69,10 +69,12 @@ class PhysicalAcquisitionBackend(AcquisitionBackend):
                 "reason": caps.get("physical_reason")}
 
     def acquire(self, progress, serial="", examiner="", device_info=None) -> dict:
-        # Nema podržanog mehanizma bez eksploita → nikad ne izvršava (spec §16).
-        raise RuntimeError(
-            "Fizička akvizicija nije podržana: nema podržanog backend-a za ovaj "
-            "uređaj/konfiguraciju (bez eksploita/zaobilaženja zaštite).")
+        # Preko kabla je fizička akvizicija moguća SAMO uz root ('dd' particije).
+        # phone.acquire_phone validira sposobnosti; ako root nije potvrđen,
+        # resolve_method() prekida sa jasnim razlogom (bez eksploita, spec §16,§46).
+        from . import phone
+        return phone.acquire_phone(progress, serial=serial, examiner=examiner,
+                                   device_info=device_info, method=self.method)
 
 
 BACKENDS = {

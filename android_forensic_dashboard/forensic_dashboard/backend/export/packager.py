@@ -160,6 +160,7 @@ def _mobile_report_model(rd: dict) -> dict:
     stats = rd.get("stats") or {}
     msum = rd.get("manifest_summary") or {}
     fsr = rd.get("filesystem_result") or {}
+    physr = rd.get("physical_result") or {}
     method = (rd.get("acquisition_method") or "logical").upper()
     sections = [
         {"heading": "Izvor i metoda akvizicije", "type": "keyvalue", "pairs": [
@@ -182,6 +183,9 @@ def _mobile_report_model(rd: dict) -> dict:
             {"label": "Ukupno podataka", "value": msum.get("total_size_human")},
             {"label": "Instaliranih paketa", "value": rd.get("packages_count")},
             {"label": "/data raspakovano (file-system)", "value": (fsr.get("extracted") if fsr else None)},
+            {"label": "Fizički imidž (particija)", "value": (
+                f"{physr.get('partition')} — {physr.get('bytes', 0) // 1048576} MB, "
+                f"SHA-256 {(physr.get('sha256') or '')[:32]}" if physr.get("ok") else None)},
         ]},
     ]
     notes = rd.get("notes") or []

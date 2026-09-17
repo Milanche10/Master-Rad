@@ -200,10 +200,15 @@ def detect_capabilities(serial: str = "") -> dict:
         "Dostupno (root potvrđen) — pristup /data preko 'su'." if root_ok else
         "Nedostupno: file-system akvizicija zahteva odobren root. " + root_reason)
 
-    # PHYSICAL: nema univerzalnog/podržanog mehanizma bez eksploita (spec §16)
-    caps.physical_available = False
-    caps.physical_reason = ("Nedostupno: nema podržanog backend-a za fizičku akviziciju "
-                            "za ovaj uređaj/konfiguraciju (bez eksploita/zaobilaženja zaštite).")
+    # PHYSICAL: preko kabla je moguća SAMO uz root (dd particija). Bez root-a
+    # zahteva EDL/bootloader/hardver (device-specific) ili eksploit — što se ne
+    # radi (spec §16,§46). Root read-only 'dd' je legitiman kad root već postoji.
+    caps.physical_available = root_ok
+    caps.physical_reason = (
+        "Dostupno (root potvrđen) — imidž particije preko 'dd' (npr. userdata), read-only." if root_ok else
+        "Nedostupno bez root-a: fizička akvizicija preko kabla zahteva root ('dd' particija) "
+        "ili EDL/bootloader/hardverske metode (device-specific). Bez eksploita/zaobilaženja zaštite. "
+        "Napomena: rutovanje nerutovanog dokaznog uređaja MENJA dokaz (narušava integritet).")
 
     return {"device": dev.to_dict(), "capabilities": caps.to_dict(), "reason": ""}
 

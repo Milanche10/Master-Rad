@@ -289,6 +289,82 @@ def _pull_data_via_root(adb: str, serial: str, ev: Path, progress, cid: str) -> 
             "tar_sha256": (tar_hashes or {}).get("sha256"), "note": "OK"}
 
 
+# Particija za fizičku akviziciju (najrelevantnija: sadrži /data i /sdcard).
+_PHYSICAL_PARTITION = "userdata"
+
+
+def _list_partitions(adb: str, serial: str) -> dict:
+    """Mapa naziv→blok-putanja iz /dev/block/by-name (root). {} ako nedostupno."""
+    rc, out, _ = detect._run(
+        _adb_cmd(adb, serial, "shell", "su", "-c", "ls -l /dev/block/by-name"), timeout=15)
+    parts = {}
+    if rc == 0:
+        for line in out.splitlines():
+            m = re.search(r"([A-Za-z0-9_\-]+)\s*->\s*(\S+)", line)
+            if m:
+                parts[m.group(1)] = m.group(2)
+    return parts
+
+
+def _pull_physical_via_root(adb: str, serial: str, ev: Path, progress, cid: str,
+                            partition: str = _PHYSICAL_PARTITION) -> dict:
+    """
+    FIZIČKA akvizicija preko kabla (spec §16) — bit-po-bit imidž particije preko
+    root 'dd': `adb exec-out su -c 'dd if=/dev/block/by-name/<part> bs=1M'`.
+    Read-only na uređaju; rezultat je sirov .img + SHA-256 (integritet). Automatsku
+    analizu sirovog ext4 imidža radi parser slika (pytsk3) — do tada se imidž ČUVA i
+    heširan je kao dokaz. Zahteva POTVRĐEN root (bez eksploita).
+    """
+    progress.update(56, f"Fizička akvizicija: imidž particije '{partition}' (dd, root)…")
+    parts = _list_partitions(adb, serial)
+    blk = parts.get(partition) or f"/dev/block/by-name/{partition}"
+    progress.log(f"Blok uređaj za '{partition}': {blk}")
+
+    out_dir = ev / "mobile" / "physical"
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+    img_path = out_dir / f"{partition}.img"
+
+    cmd = _adb_cmd(adb, serial, "exec-out", "su", "-c", f"dd if={blk} bs=1M 2>/dev/null")
+
+    def _on_bytes(n):
+        mb = n // 1048576
+        progress.update(min(90, 56 + int(mb / 4096 * 32)), f"Fizička: {mb} MB ({partition})…")
+
+    rc, nbytes = detect.run_to_file(cmd, str(img_path), progress=progress,
+                                    timeout=14400, stall_timeout=180, on_bytes=_on_bytes)
+    if rc == 130:
+        try:
+            img_path.unlink()
+        except Exception:
+            pass
+        return {"ok": False, "rc": 130, "note": "otkazano", "bytes": nbytes, "partition": partition}
+    if rc != 0 or nbytes < 4096:
+        note = {124: "vremenski limit", 125: "zastoj (nema napretka)"}.get(rc, f"rc={rc}")
+        progress.log(f"Fizička (dd) nije uspela ({note}, {nbytes} B) — proveri root/blok putanju.")
+        try:
+            img_path.unlink()
+        except Exception:
+            pass
+        return {"ok": False, "rc": rc, "note": note, "bytes": nbytes, "partition": partition}
+
+    hashes = base.compute_hashes(img_path)
+    man = base.EvidenceManifest(case_id=cid, source="mobile-physical")
+    try:
+        man.add(str(img_path.relative_to(ev)), img_path, hashes)
+        man.write(cases_fs.case_dir(cid) / "Logs")
+    except Exception:
+        pass
+    cases_fs.append_log(cid, f"Fizička akvizicija: {partition}.img "
+                             f"({nbytes // 1048576} MB, SHA-256 {(hashes or {}).get('sha256','?')[:16]}…).")
+    progress.log(f"Fizička akvizicija: imidž '{partition}' snimljen ({nbytes // 1048576} MB).")
+    return {"ok": True, "rc": 0, "bytes": nbytes, "partition": partition,
+            "image_rel": str(img_path.relative_to(cases_fs.case_dir(cid))),
+            "sha256": (hashes or {}).get("sha256"), "note": "OK"}
+
+
 def _pull_packages(adb: str, serial: str, ev: Path, progress) -> int:
     """
     `adb shell pm list packages` → ev/data/system/packages.list (po jedan
@@ -400,6 +476,7 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
 
     notes = []
     fs_result = None
+    phys_result = None
 
     # ── 2b. Sposobnosti + izbor metode (spec §6–10, §40, §46) ────────────
     progress.update(8, "Detekcija sposobnosti uređaja (capabilities)…")
@@ -453,7 +530,7 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
     if progress.cancelled():
         return _finish(cid, ev, case, device, None, False, 0, notes,
                        progress, cancelled=True, method=effective_method,
-                       capabilities_dict=caps, fs_result=fs_result)
+                       capabilities_dict=caps, fs_result=fs_result, physical_result=phys_result)
 
     # ── 4. Korisničko skladište (/sdcard) ────────────────────────────────
     pull = _pull_sdcard(adb, serial, ev, progress)
@@ -466,7 +543,7 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
     if progress.cancelled():
         return _finish(cid, ev, case, device, None, False, 0, notes,
                        progress, cancelled=True, method=effective_method,
-                       capabilities_dict=caps, fs_result=fs_result)
+                       capabilities_dict=caps, fs_result=fs_result, physical_result=phys_result)
 
     # ── 5. Instalirane aplikacije ────────────────────────────────────────
     packages_count = _pull_packages(adb, serial, ev, progress)
@@ -476,21 +553,32 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
     if progress.cancelled():
         return _finish(cid, ev, case, device, None, False, packages_count, notes,
                        progress, cancelled=True, method=effective_method,
-                       capabilities_dict=caps, fs_result=fs_result)
+                       capabilities_dict=caps, fs_result=fs_result, physical_result=phys_result)
 
-    # ── 5b. FILE-SYSTEM akvizicija /data (samo ako je metoda FILE_SYSTEM) ─
+    # ── 5b. FILE-SYSTEM ili PHYSICAL akvizicija (samo za te metode, uz root) ─
     if effective_method == capabilities.AcquisitionMethod.FILE_SYSTEM:
         fs_result = _pull_data_via_root(adb, serial, ev, progress, cid)
         if not (fs_result and fs_result.get("ok")):
             notes.append("File-system akvizicija /data nije uspela ("
                          + str((fs_result or {}).get("note")) + "). Prikupljeni su "
                          "logički podaci (/sdcard, svojstva, paketi); /data nije obuhvaćen.")
+    elif effective_method == capabilities.AcquisitionMethod.PHYSICAL:
+        phys_result = _pull_physical_via_root(adb, serial, ev, progress, cid)
+        if not (phys_result and phys_result.get("ok")):
+            notes.append("Fizička akvizicija (dd) nije uspela ("
+                         + str((phys_result or {}).get("note")) + "). Prikupljeni su "
+                         "logički podaci; bit-po-bit imidž particije nije snimljen.")
 
     # ── 6. Pošteno beleženje obima i ograničenja (spec §13,§46) ──────────
     if effective_method == capabilities.AcquisitionMethod.FILE_SYSTEM and fs_result and fs_result.get("ok"):
         note = (f"Metoda: FILE-SYSTEM (root). Pored /sdcard prikupljeni su i aplikacioni "
                 f"privatni podaci: /data/data, /data/system, /data/misc, /data/user "
                 f"({fs_result.get('extracted', 0)} fajlova iz /data).")
+    elif effective_method == capabilities.AcquisitionMethod.PHYSICAL and phys_result and phys_result.get("ok"):
+        note = (f"Metoda: PHYSICAL (root, dd). Snimljen je bit-po-bit imidž particije "
+                f"'{phys_result.get('partition')}' ({phys_result.get('bytes', 0) // 1048576} MB, "
+                f"SHA-256 {(phys_result.get('sha256') or '')[:16]}…). Sirov imidž se čuva i heširan "
+                f"je kao dokaz; automatsku analizu ext4 imidža radi parser slika (pytsk3).")
     else:
         note = ("Metoda: LOGICAL. Aplikacioni privatni podaci (/data/data/<paket>) NISU "
                 "prikupljeni — nedostupni su bez root-a. Prikupljeno: /sdcard, svojstva "
@@ -505,7 +593,7 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
     if progress.cancelled():
         return _finish(cid, ev, case, device, None, False, packages_count, notes,
                        progress, cancelled=True, method=effective_method,
-                       capabilities_dict=caps, fs_result=fs_result)
+                       capabilities_dict=caps, fs_result=fs_result, physical_result=phys_result)
 
     # ── 7. Manifest (integritet) ─────────────────────────────────────────
     manifest, capped, seen_total = _build_manifest(ev, cid, progress)
@@ -529,7 +617,7 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
 
 def _finish(cid, ev, case, device, manifest, capped, packages_count, notes,
             progress, cancelled=False, summary=None, method="logical",
-            capabilities_dict=None, fs_result=None):
+            capabilities_dict=None, fs_result=None, physical_result=None):
     """
     Zajednički završetak: upiši manifest ako još nije (rani izlaz zbog
     otkazivanja), ažuriraj case.json i sastavi povratni dict po ugovoru.
@@ -578,6 +666,7 @@ def _finish(cid, ev, case, device, manifest, capped, packages_count, notes,
         "acquisition_method": method,
         "capabilities": capabilities_dict or {},
         "filesystem_result": fs_result,
+        "physical_result": physical_result,
         "stats": stats,
         "manifest_summary": summary,
         "packages_count": packages_count,
