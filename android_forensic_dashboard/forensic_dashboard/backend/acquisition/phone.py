@@ -397,7 +397,8 @@ def _build_manifest(ev: Path, cid: str, progress) -> tuple:
 
 
 def acquire_phone(progress, serial: str = "", examiner: str = "",
-                  device_info: dict = None, method: str = "logical") -> dict:
+                  device_info: dict = None, method: str = "logical",
+                  auto_root: bool = True) -> dict:
     """
     Target funkcija za jobs.start_job. Akvizicija USB Android telefona preko adb.
     `method`: logical | file_system | physical | auto (spec §10,§40).
@@ -437,8 +438,16 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
 
     # ── 2b. Sposobnosti + izbor metode (spec §6–10, §40, §46) ────────────
     progress.update(8, "Detekcija sposobnosti uređaja (capabilities)…")
-    caps_info = capabilities.detect_capabilities(serial)
+    # Za privilegovane metode, na consent, pokušaj LEGITIMNU `adb root` elevaciju
+    # (radi na emulatoru/userdebug/rutovanom uređaju; bez exploita — spec §9,§16).
+    want_priv = method in (capabilities.AcquisitionMethod.FILE_SYSTEM,
+                           capabilities.AcquisitionMethod.PHYSICAL,
+                           capabilities.AcquisitionMethod.AUTO)
+    caps_info = capabilities.detect_capabilities(serial, attempt_adb_root=(auto_root and want_priv))
     caps = caps_info.get("capabilities", {})
+    if caps.get("adb_root_attempt"):
+        progress.log("adb root: " + caps["adb_root_attempt"])
+        cases_fs.append_log(cid, "adb root pokušaj: " + caps["adb_root_attempt"])
     try:
         effective_method, method_note = capabilities.resolve_method(method, caps)
     except RuntimeError as e:

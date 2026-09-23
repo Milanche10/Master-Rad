@@ -126,6 +126,19 @@ export default function DeviceDetect({ source, examiner, onStarted, onBack }) {
   const methodAvailable = source !== 'mobile'
     || !!(caps && caps.methods && caps.methods.some((m) => m.method === methodSel && m.available));
 
+  // Legitimna `adb root` elevacija na zahtev (emulator/userdebug/rutovan uređaj; bez exploita).
+  const attemptRoot = async () => {
+    setCaps({ loading: true });
+    try {
+      const d = await api.detectPhoneCapabilities(selected, true);
+      setCaps(d);
+      const methods = d.methods || [];
+      const auto = methods.find((m) => m.method === 'auto' && m.available);
+      const firstAvail = methods.find((m) => m.available && m.method !== 'auto');
+      setMethodSel(auto ? 'auto' : (firstAvail ? firstAvail.method : 'auto'));
+    } catch (e) { setCaps({ error: e.message }); }
+  };
+
   const start = async () => {
     const item = items.find((it) => cfg.idOf(it) === selected);
     if (!item) return;
@@ -256,6 +269,26 @@ export default function DeviceDetect({ source, examiner, onStarted, onBack }) {
               </button>
             );
           })}
+
+          {/* Legitimna `adb root` elevacija (emulator/userdebug); bez exploita */}
+          {!(caps.capabilities && caps.capabilities.root_available) && (
+            <div style={{ marginTop: 4 }}>
+              <button onClick={attemptRoot} style={{
+                background: C.bgCard, color: C.textSecondary, border: `1px solid ${C.border}`,
+                borderRadius: 6, padding: '7px 12px', fontFamily: C.fontMono, fontSize: 11, cursor: 'pointer',
+              }}>⚡ Pokušaj `adb root` (emulator / userdebug)</button>
+              <div style={{ color: C.textMuted, fontSize: 10, marginTop: 4, lineHeight: 1.4 }}>
+                Zvanična `adb root` komanda — radi na emulatoru/userdebug/rutovanom uređaju.
+                Ne koristi exploit i ne menja dokaz.
+              </div>
+            </div>
+          )}
+          {caps.capabilities && caps.capabilities.adb_root_attempt && (
+            <div style={{ color: (caps.capabilities.root_available ? C.green : C.yellow),
+              fontSize: 10, fontFamily: C.fontMono, marginTop: 6 }}>
+              adb root: {caps.capabilities.adb_root_attempt}
+            </div>
+          )}
         </div>
       )}
 

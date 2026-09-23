@@ -166,7 +166,8 @@ class AcquireRequest(BaseModel):
     # telefon
     serial: str = ""
     device_info: dict = {}
-    method: str = "auto"   # logical | file_system | physical | auto (Android)
+    method: str = "auto"       # logical | file_system | physical | auto (Android)
+    auto_root: bool = True     # na consent: pokušaj LEGITIMNU `adb root` (emulator/userdebug; bez exploita)
     # SIM
     reader: str = ""
 
@@ -1915,12 +1916,14 @@ def detect_phone():
 
 
 @app.get("/api/detect/phone/capabilities")
-def detect_phone_capabilities(serial: str = ""):
+def detect_phone_capabilities(serial: str = "", attempt_root: bool = False):
     """
     Sposobnosti uređaja + dostupne metode akvizicije (LOGICAL/FILE_SYSTEM/PHYSICAL/AUTO)
     sa razlozima za nedostupne — za ekran izbora metode (spec §6–10, §39).
+    attempt_root=True (na eksplicitan zahtev/consent) pokuša LEGITIMNU `adb root`
+    elevaciju (radi na emulatoru/userdebug; bez exploita), pa metode postanu dostupne.
     """
-    info = acq_caps.detect_capabilities(serial)
+    info = acq_caps.detect_capabilities(serial, attempt_adb_root=attempt_root)
     info["methods"] = acq_backends.list_methods(info.get("capabilities", {}))
     return info
 
@@ -1966,7 +1969,8 @@ def start_acquisition(source: str, body: AcquireRequest):
                   "disk_info": body.disk_info or {}}
     elif source == "mobile":
         kwargs = {"serial": body.serial, "examiner": body.examiner,
-                  "device_info": body.device_info or {}, "method": body.method or "auto"}
+                  "device_info": body.device_info or {}, "method": body.method or "auto",
+                  "auto_root": bool(body.auto_root)}
     else:  # sim
         kwargs = {"reader_name": body.reader, "examiner": body.examiner}
 

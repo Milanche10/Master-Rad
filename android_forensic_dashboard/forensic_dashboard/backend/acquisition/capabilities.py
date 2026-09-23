@@ -78,6 +78,7 @@ class DeviceCapabilities:
     logical_reason: str | None = None
     filesystem_reason: str | None = None
     physical_reason: str | None = None
+    adb_root_attempt: str | None = None   # rezultat legitimnog `adb root` pokušaja
 
     def to_dict(self):
         return asdict(self)
@@ -119,6 +120,36 @@ def detect_root(adb: str, serial: str) -> tuple[bool, str]:
     return False, "Root nije detektovan (nije eksploatisan — samo postojeći root se koristi)."
 
 
+def try_enable_adb_root(adb: str, serial: str) -> tuple[bool, str]:
+    """
+    LEGITIMNO podizanje privilegija: zvanična `adb root` komanda koja restartuje
+    adbd kao root. Radi SAMO na debug/userdebug/eng build-ovima i emulatoru; na
+    produkcionom uređaju vraća grešku i NE menja uređaj.
+
+    NIJE exploit i NE radi: eksploate ranjivosti, otključavanje bootloader-a,
+    izmenu boot imidža, zaobilaženje lock screen-a, EDL/firehose (spec §9,§16,§46).
+    Ako uređaj to ne dozvoljava, root se jednostavno ne podiže. Vraća (root, poruka).
+    """
+    ok, _ = detect_root(adb, serial)
+    if ok:
+        return True, "Root je već dostupan (nije bilo potrebe za `adb root`)."
+
+    rc, out, err = detect._run(_adb_cmd(adb, serial, "root"), timeout=30)
+    msg = (out + " " + err).strip()
+    low = msg.lower()
+    if "cannot run as root" in low or "production" in low or "not permitted" in low:
+        return False, ("`adb root` odbijen (produkcioni build) — root NIJE podignut. "
+                       "Potreban je već rutovan uređaj / emulator / userdebug. Exploit se NE koristi.")
+    if rc != 0 and ("no devices" in low or "not found" in low or "error:" in low or "offline" in low):
+        return False, f"`adb root` nije uspeo (uređaj nedostupan): {msg or 'nepoznato'}"
+    # adbd se restartuje — sačekaj da se uređaj vrati (kratko; ne blokira ako nema uređaja)
+    detect._run(_adb_cmd(adb, serial, "wait-for-device"), timeout=20)
+    ok2, why2 = detect_root(adb, serial)
+    if ok2:
+        return True, "Root podignut zvaničnom `adb root` komandom (debug build / emulator)."
+    return False, f"`adb root` nije podigao root ({msg or why2})."
+
+
 def _getprop(adb: str, serial: str) -> dict:
     rc, out, _ = detect._run(_adb_cmd(adb, serial, "shell", "getprop"), timeout=20)
     props = {}
@@ -135,10 +166,12 @@ def _adb_state(adb: str, serial: str) -> str:
     return out.strip() if rc == 0 else "unknown"
 
 
-def detect_capabilities(serial: str = "") -> dict:
+def detect_capabilities(serial: str = "", attempt_adb_root: bool = False) -> dict:
     """
     Puna detekcija: uređaj + sposobnosti. Vraća {device, capabilities} kao dict-ove.
     Bezbedno i read-only. Ako adb/uređaj nije dostupan → sve metode UNAVAILABLE.
+    Ako attempt_adb_root=True (na consent), pokuša LEGITIMNU `adb root` elevaciju
+    pre detekcije root-a (radi na emulatoru/userdebug; bez exploita).
     """
     adb = detect.adb_path()
     caps = DeviceCapabilities()
@@ -195,6 +228,8 @@ def detect_capabilities(serial: str = "") -> dict:
     # ROOT + FILE_SYSTEM (spec §6): FS je mode koji koristi privilegovani pristup
     # KADA postoji; bez root-a prikuplja dostupno (npr. /sdcard) i pošteno beleži
     # /data kao PERMISSION_DENIED. Zato je dostupan kad je uređaj autorizovan.
+    if attempt_adb_root:
+        _r, caps.adb_root_attempt = try_enable_adb_root(adb, serial)
     root_ok, root_reason = detect_root(adb, serial)
     caps.root_available = root_ok
     caps.root_reason = root_reason
