@@ -218,75 +218,32 @@ def _pull_sdcard(adb: str, serial: str, ev: Path, progress) -> dict:
     return {"ok": False, "rc": rc3, "note": reason}
 
 
-def _pull_data_via_root(adb: str, serial: str, ev: Path, progress, cid: str) -> dict:
+def _pull_data_via_root(adb: str, serial: str, ev: Path, progress, cid: str,
+                        privileged: bool = True) -> dict:
     """
-    FILE-SYSTEM akvizicija (spec §14–15): sa POTVRĐENIM root-om prikupi /data
-    poddrveta preko `adb exec-out su -c 'tar -c -C / …'` (sirov binarni stream),
-    pa raspakuj u Evidence u Android-FS rasporedu. Read-only na uređaju
-    (tar samo čita; ništa se ne piše na telefon). Vraća {ok, bytes, extracted, tar_sha256, note}.
+    FILE-SYSTEM akvizicija preko novog filesystem sloja (spec §8–17):
+    per-fajl STATUS + metapodaci + streaming SHA-256, symlink-safe, otkazivanje.
+    Koristi PrivilegedFileSystemAccess (root → pun /data) ili AdbFileSystemAccess
+    (bez root-a → dostupno + pošten PERMISSION_DENIED za /data). Rezultat je
+    Android-FS raspored u Evidence, pa ga postojeći DumpResolver čita bez izmene.
+    Vraća {ok, extracted, denied, errors, bytes, note, report}.
     """
-    progress.update(58, "File-system akvizicija: /data preko root-a (tar)…")
-    progress.log("adb exec-out su -c 'tar -c -C / " + " ".join(_FS_DATA_SUBTREES) +
-                 "' (root, read-only na uređaju)")
-    tar_path = ev / "Metadata" / "_filesystem_data.tar"
-    try:
-        tar_path.parent.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    from filesystem.access import PrivilegedFileSystemAccess, AdbFileSystemAccess
+    from filesystem.fs_acquire import FileSystemAcquisition
 
-    subtrees = " ".join(_FS_DATA_SUBTREES)
-    cmd = _adb_cmd(adb, serial, "exec-out", "su", "-c",
-                   f"tar -c -C / {subtrees} 2>/dev/null")
-
-    def _on_bytes(n):
-        mb = n // 1048576
-        progress.update(min(74, 58 + int(mb / 400 * 16)),
-                        f"File-system: preuzeto {mb} MB /data…")
-
-    rc, nbytes = detect.run_to_file(cmd, str(tar_path), progress=progress,
-                                    timeout=3600, stall_timeout=180, on_bytes=_on_bytes)
-    if rc == 130:
-        try:
-            tar_path.unlink()
-        except Exception:
-            pass
-        return {"ok": False, "rc": 130, "note": "otkazano", "bytes": nbytes}
-    if rc != 0 or nbytes < 512:
-        note = {124: "vremenski limit", 125: "zastoj (nema napretka)"}.get(rc, f"rc={rc}")
-        progress.log(f"File-system tar nije uspeo ({note}, {nbytes} B) — moguće da su "
-                     f"prava/root nedovoljni. Prelaz na logical nije automatski (spec §14).")
-        try:
-            tar_path.unlink()
-        except Exception:
-            pass
-        return {"ok": False, "rc": rc, "note": note, "bytes": nbytes}
-
-    tar_hashes = base.compute_hashes(tar_path)   # provenance heš sirovog tar-a
-    progress.update(75, "Raspakivanje /data (tar) u Evidence…")
-    extracted = 0
-    try:
-        import tarfile
-        with tarfile.open(str(tar_path)) as tf:
-            for m in tf.getmembers():
-                try:
-                    tf.extract(m, path=str(ev), filter="data")  # bezbedno (bez path traversal)
-                    if m.isfile():
-                        extracted += 1
-                except Exception:
-                    continue
-    except Exception as e:
-        progress.log(f"Raspakivanje tar-a delimično/neuspešno: {e}")
-
-    try:
-        tar_path.unlink()   # sirovi tar može biti GB; heš je zabeležen (provenance)
-    except Exception:
-        pass
-
-    cases_fs.append_log(cid, f"File-system (root): /data → {extracted} fajlova raspakovano "
-                             f"({nbytes // 1048576} MB tar, SHA-256 {(tar_hashes or {}).get('sha256','?')[:16]}…).")
-    progress.log(f"File-system akvizicija: raspakovano {extracted} fajlova iz /data.")
-    return {"ok": True, "rc": 0, "bytes": nbytes, "extracted": extracted,
-            "tar_sha256": (tar_hashes or {}).get("sha256"), "note": "OK"}
+    access = PrivilegedFileSystemAccess(adb, serial) if privileged else AdbFileSystemAccess(adb, serial)
+    progress.log(f"File-system pristup: {access.name} (privileged={access.privileged}).")
+    rep = FileSystemAcquisition(access).run(ev, cid, progress)
+    t = rep.get("totals", {})
+    return {
+        "ok": bool(rep.get("ok")),
+        "extracted": t.get("ACQUIRED", 0),
+        "denied": t.get("PERMISSION_DENIED", 0),
+        "errors": t.get("ERROR", 0),
+        "bytes": t.get("bytes", 0),
+        "note": "OK" if rep.get("ok") else "nijedan fajl nije prikupljen (proveri pristup/root)",
+        "report": rep,
+    }
 
 
 # Particija za fizičku akviziciju (najrelevantnija: sadrži /data i /sdcard).
@@ -533,10 +490,16 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
                        capabilities_dict=caps, fs_result=fs_result, physical_result=phys_result)
 
     # ── 4. Korisničko skladište (/sdcard) ────────────────────────────────
-    pull = _pull_sdcard(adb, serial, ev, progress)
-    if not pull["ok"]:
-        notes.append("Preuzimanje korisničkog skladišta (/sdcard) nije u "
-                     "potpunosti uspelo: " + str(pull.get("note")))
+    # FILE-SYSTEM metoda već obuhvata /sdcard (kao lokaciju), pa se ovde preskače
+    # da se ne prenosi dvaput.
+    if effective_method == capabilities.AcquisitionMethod.FILE_SYSTEM:
+        pull = {"ok": True, "note": "kroz file-system akviziciju"}
+        progress.log("/sdcard će biti prikupljen kroz file-system akviziciju (bez dvostrukog prenosa).")
+    else:
+        pull = _pull_sdcard(adb, serial, ev, progress)
+        if not pull["ok"]:
+            notes.append("Preuzimanje korisničkog skladišta (/sdcard) nije u "
+                         "potpunosti uspelo: " + str(pull.get("note")))
     cases_fs.append_log(cid, f"Preuzimanje /sdcard → data/media/0 "
                              f"(uspeh: {pull['ok']}). {pull.get('note') or ''}".strip())
 
@@ -555,13 +518,14 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
                        progress, cancelled=True, method=effective_method,
                        capabilities_dict=caps, fs_result=fs_result, physical_result=phys_result)
 
-    # ── 5b. FILE-SYSTEM ili PHYSICAL akvizicija (samo za te metode, uz root) ─
+    # ── 5b. FILE-SYSTEM ili PHYSICAL akvizicija ──────────────────────────
     if effective_method == capabilities.AcquisitionMethod.FILE_SYSTEM:
-        fs_result = _pull_data_via_root(adb, serial, ev, progress, cid)
+        fs_result = _pull_data_via_root(adb, serial, ev, progress, cid,
+                                        privileged=bool(caps.get("filesystem_privileged")))
         if not (fs_result and fs_result.get("ok")):
-            notes.append("File-system akvizicija /data nije uspela ("
-                         + str((fs_result or {}).get("note")) + "). Prikupljeni su "
-                         "logički podaci (/sdcard, svojstva, paketi); /data nije obuhvaćen.")
+            notes.append("File-system akvizicija nije prikupila nijedan fajl ("
+                         + str((fs_result or {}).get("note")) + "). Vidi filesystem_manifest "
+                         "za status po lokaciji/fajlu.")
     elif effective_method == capabilities.AcquisitionMethod.PHYSICAL:
         phys_result = _pull_physical_via_root(adb, serial, ev, progress, cid)
         if not (phys_result and phys_result.get("ok")):
@@ -571,9 +535,11 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
 
     # ── 6. Pošteno beleženje obima i ograničenja (spec §13,§46) ──────────
     if effective_method == capabilities.AcquisitionMethod.FILE_SYSTEM and fs_result and fs_result.get("ok"):
-        note = (f"Metoda: FILE-SYSTEM (root). Pored /sdcard prikupljeni su i aplikacioni "
-                f"privatni podaci: /data/data, /data/system, /data/misc, /data/user "
-                f"({fs_result.get('extracted', 0)} fajlova iz /data).")
+        _priv = bool((fs_result.get("report") or {}).get("privileged"))
+        note = (f"Metoda: FILE-SYSTEM ({'root — pun /data' if _priv else 'bez root-a — delimično'}). "
+                f"Prikupljeno {fs_result.get('extracted', 0)} fajlova, PERMISSION_DENIED "
+                f"{fs_result.get('denied', 0)}, greške {fs_result.get('errors', 0)} "
+                f"(status po fajlu/lokaciji u filesystem_manifest.json/csv).")
     elif effective_method == capabilities.AcquisitionMethod.PHYSICAL and phys_result and phys_result.get("ok"):
         note = (f"Metoda: PHYSICAL (root, dd). Snimljen je bit-po-bit imidž particije "
                 f"'{phys_result.get('partition')}' ({phys_result.get('bytes', 0) // 1048576} MB, "
@@ -584,9 +550,9 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
                 "prikupljeni — nedostupni su bez root-a. Prikupljeno: /sdcard, svojstva "
                 "uređaja, lista paketa. Baze SMS-a/poziva/aplikacija iz /data nisu obuhvaćene.")
     notes.append(note)
-    notes.append("IMEI (modem/EFS particija), fizička particija i nealocirani/izbrisani "
-                 "prostor nisu dostupni ovom akvizicijom (fizička metoda nije podržana "
-                 "bez namenskog backend-a — spec §16).")
+    notes.append("IMEI (modem/EFS particija) nije dostupan preko adb-a. Fizička particija / "
+                 "nealocirani (izbrisani) prostor dostupni su SAMO fizičkom metodom uz root "
+                 "('dd'), ili EDL/hardverom bez root-a (spec §16).")
     progress.log(note)
     cases_fs.append_log(cid, note)
 
@@ -612,7 +578,7 @@ def acquire_phone(progress, serial: str = "", examiner: str = "",
     return _finish(cid, ev, case, device, manifest, capped, packages_count,
                    notes, progress, cancelled=progress.cancelled(),
                    summary=summary, method=effective_method,
-                   capabilities_dict=caps, fs_result=fs_result)
+                   capabilities_dict=caps, fs_result=fs_result, physical_result=phys_result)
 
 
 def _finish(cid, ev, case, device, manifest, capped, packages_count, notes,

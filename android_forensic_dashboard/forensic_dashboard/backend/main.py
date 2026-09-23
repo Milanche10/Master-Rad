@@ -88,6 +88,7 @@ from acquisition import cases_fs as acq_cases
 from acquisition import storage as acq_storage
 from acquisition import capabilities as acq_caps
 from acquisition import backends as acq_backends
+from imaging import image_parser as acq_image
 from export import exporters as exporters_mod
 from export import packager as packager_mod
 from provisioning import provision as provisioning
@@ -168,8 +169,6 @@ class AcquireRequest(BaseModel):
     method: str = "auto"   # logical | file_system | physical | auto (Android)
     # SIM
     reader: str = ""
-    # Forenzička slika (raw/dd/.img)
-    image_path: str = ""
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────
@@ -1946,9 +1945,6 @@ def _acquire_target(source: str):
     if source == "sim":
         from acquisition import sim as acq_sim
         return acq_sim.acquire_sim
-    if source == "image":
-        from acquisition import image_import as acq_image
-        return acq_image.acquire_image
     raise HTTPException(status_code=400, detail=f"Nepoznat izvor akvizicije: {source}")
 
 
@@ -1958,7 +1954,7 @@ def start_acquisition(source: str, body: AcquireRequest):
     Pokreni akviziciju (asinhrono, u pozadinskoj niti). Vraća job_id za praćenje.
     source: mobile | sim | sdcard | usb
     """
-    if source not in ("mobile", "sim", "sdcard", "usb", "image"):
+    if source not in ("mobile", "sim", "sdcard", "usb"):
         raise HTTPException(status_code=400, detail=f"Nepoznat izvor: {source}")
     target = _acquire_target(source)
 
@@ -1971,17 +1967,19 @@ def start_acquisition(source: str, body: AcquireRequest):
     elif source == "mobile":
         kwargs = {"serial": body.serial, "examiner": body.examiner,
                   "device_info": body.device_info or {}, "method": body.method or "auto"}
-    elif source == "image":
-        if not body.image_path:
-            raise HTTPException(status_code=400, detail="Nije zadata putanja do slike.")
-        kwargs = {"image_path": body.image_path, "examiner": body.examiner}
     else:  # sim
         kwargs = {"reader_name": body.reader, "examiner": body.examiner}
 
+    # Eksplicitni pristanak veštaka evidentiran PRE akvizicije (spec §7, chain of custody).
+    audit_log.log_event(
+        actor=f"examiner:{body.examiner or 'nepoznat'}", action="acquisition_consent",
+        params={"source": source, "method": (body.method if source == "mobile" else source),
+                "device": body.device_info or {},
+                "target": body.mount or body.serial or body.reader, "consented": True})
     job_id = acq_jobs.start_job(source, target, **kwargs)
     audit_log.log_event(actor=f"examiner:{body.examiner or 'nepoznat'}",
                         action="start_acquisition",
-                        params={"source": source, "job_id": job_id,
+                        params={"source": source, "job_id": job_id, "method": body.method,
                                 "target": body.mount or body.serial or body.reader})
     return {"job_id": job_id, "source": source}
 
@@ -2007,6 +2005,62 @@ def acquire_job_cancel(job_id: str):
 def list_acquisition_cases():
     """Svi slučajevi na disku (central case manager, akvizicija)."""
     return {"cases": acq_cases.list_fs_cases()}
+
+
+def _parse_image_job(progress, image_path: str, dest: str, case_id: str = None) -> dict:
+    """Job: parsiraj sirov imidž (pytsk3) u dest (Android-FS), zapiši manifest."""
+    from pathlib import Path as _P
+    import json as _json
+    progress.update(5, "Priprema parsiranja imidža…")
+    rep = acq_image.parse_image(image_path, dest, progress=progress)
+    if case_id:
+        try:
+            acq_cases.append_log(case_id, f"Parsiranje imidža {image_path}: "
+                                          f"ok={rep.get('ok')}, {rep.get('totals')}")
+            logs = acq_cases.case_dir(case_id) / "Logs"
+            logs.mkdir(parents=True, exist_ok=True)
+            (logs / "image_parse_manifest.json").write_text(
+                _json.dumps({"image": image_path, "summary": rep.get("totals"),
+                             "filesystems": rep.get("filesystems"),
+                             "files": (rep.get("entries") or [])[:20000]},
+                            ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+    progress.update(100, "Parsiranje imidža završeno.")
+    return {"ok": rep.get("ok"), "case_id": case_id, "image": image_path,
+            "dest": dest, "totals": rep.get("totals"), "reason": rep.get("reason"),
+            "evidence_path": str(_P(dest).parent) if case_id else dest}
+
+
+@app.get("/api/imaging/status")
+def imaging_status():
+    """Da li je pytsk3 (Sleuth Kit) dostupan za analizu sirovih imidža."""
+    return {"pytsk3": acq_image.pytsk3_available()}
+
+
+@app.post("/api/acquire/case/{case_id}/parse-physical")
+def parse_physical_image(case_id: str):
+    """
+    Faza 4: parsiraj fizički imidž (userdata.img) iz slučaja u Evidence/data
+    (Android-FS), da postojeći analitički engine može da ga analizira. Job.
+    """
+    meta = acq_cases.read_case_meta(case_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="Slučaj nije pronađen.")
+    if not acq_image.pytsk3_available():
+        raise HTTPException(status_code=400, detail="pytsk3 nije instaliran (pip install pytsk3).")
+    ev = Path(meta["evidence_path"])
+    phys_dir = ev / "mobile" / "physical"
+    imgs = sorted(phys_dir.glob("*.img")) if phys_dir.exists() else []
+    if not imgs:
+        raise HTTPException(status_code=404, detail="Nema fizičkog imidža (.img) u slučaju.")
+    # userdata particija = /data → fs root sadrži data/system/… → extract u Evidence/data
+    dest = str(ev / "data")
+    job_id = acq_jobs.start_job("parse_image", _parse_image_job, examiner=meta.get("examiner", ""),
+                                image_path=str(imgs[0]), dest=dest, case_id=case_id)
+    audit_log.log_event(actor="examiner", action="parse_physical_image",
+                        params={"case_id": case_id, "image": str(imgs[0]), "job_id": job_id})
+    return {"job_id": job_id, "image": str(imgs[0]), "dest": dest}
 
 
 def _acq_report_model(case_id: str) -> dict:

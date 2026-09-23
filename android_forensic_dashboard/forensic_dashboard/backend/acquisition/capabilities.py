@@ -71,6 +71,7 @@ class DeviceCapabilities:
 
     logical_available: bool = False
     filesystem_available: bool = False
+    filesystem_privileged: bool = False   # pun /data (root) vs. delimično (bez root-a)
     physical_available: bool = False
 
     root_reason: str | None = None
@@ -191,14 +192,18 @@ def detect_capabilities(serial: str = "") -> dict:
     caps.logical_available = True
     caps.logical_reason = "Dostupno (ADB autorizovan)."
 
-    # ROOT + FILE_SYSTEM
+    # ROOT + FILE_SYSTEM (spec §6): FS je mode koji koristi privilegovani pristup
+    # KADA postoji; bez root-a prikuplja dostupno (npr. /sdcard) i pošteno beleži
+    # /data kao PERMISSION_DENIED. Zato je dostupan kad je uređaj autorizovan.
     root_ok, root_reason = detect_root(adb, serial)
     caps.root_available = root_ok
     caps.root_reason = root_reason
-    caps.filesystem_available = root_ok
+    caps.filesystem_available = True   # uređaj je autorizovan (grana iznad to garantuje)
+    caps.filesystem_privileged = root_ok
     caps.filesystem_reason = (
-        "Dostupno (root potvrđen) — pristup /data preko 'su'." if root_ok else
-        "Nedostupno: file-system akvizicija zahteva odobren root. " + root_reason)
+        "Pun file-system pristup /data preko root-a ('su')." if root_ok else
+        "Delimično: bez root-a prikuplja dostupan sadržaj (npr. /sdcard), a /data/data "
+        "se pošteno beleži kao PERMISSION_DENIED. Pun /data zahteva odobren root.")
 
     # PHYSICAL: preko kabla je moguća SAMO uz root (dd particija). Bez root-a
     # zahteva EDL/bootloader/hardver (device-specific) ili eksploit — što se ne
